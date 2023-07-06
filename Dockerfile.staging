@@ -88,7 +88,7 @@ RUN apt -y update \
 #   pydicom: DICOM images
 #
 
-RUN pip install pycocotools
+RUN pip install pycocotools ipywidgets tqdm
 RUN pip --no-cache-dir install --upgrade pip setuptools wheel ipython
 
 #
@@ -98,7 +98,7 @@ RUN pip --no-cache-dir install --upgrade pip setuptools wheel ipython
 COPY dist dist
 RUN pip --no-cache-dir install dist/*.whl && rm -rf dist
 
-COPY utils/fiftyone_ingedata fiftyone_ingedata
+#COPY utils/fiftyone_ingedata fiftyone_ingedata
 
 # Use this instead if you want the latest FiftyOne release
 # RUN pip --no-cache-dir install fiftyone

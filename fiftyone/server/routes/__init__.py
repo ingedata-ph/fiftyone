@@ -20,7 +20,7 @@ from .tag import Tag
 from .tagging import Tagging
 from .values import Values
 from .load_data import LoadData
-
+from .load_data_xxii import LoadDataXxii
 
 routes = [
     ("/aggregate", Aggregate),
@@ -38,4 +38,5 @@ routes = [
     ("/tagging", Tagging),
     ("/values", Values),
     ("/load_data", LoadData),
+    ("/load_data_xxii", LoadDataXxii)
 ]

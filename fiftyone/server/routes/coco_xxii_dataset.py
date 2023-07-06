@@ -4,6 +4,8 @@ from pathlib import Path
 import fiftyone as fo
 from tqdm import tqdm
 
+def hello_fiftyone():
+    return "fiftyone"
 
 def bbox_coco_to_fiftyone(bbox: list[float], width: int, height: int) -> list[float]:
     """ This function converts a coco bbox to a fiftyone bbox
