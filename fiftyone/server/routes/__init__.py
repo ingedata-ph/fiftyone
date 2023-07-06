@@ -19,6 +19,7 @@ from .stages import Stages
 from .tag import Tag
 from .tagging import Tagging
 from .values import Values
+from .load_data import LoadData
 
 
 routes = [
@@ -36,4 +37,5 @@ routes = [
     ("/tag", Tag),
     ("/tagging", Tagging),
     ("/values", Values),
+    ("/load_data", LoadData),
 ]

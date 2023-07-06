@@ -98,6 +98,8 @@ RUN pip --no-cache-dir install --upgrade pip setuptools wheel ipython
 COPY dist dist
 RUN pip --no-cache-dir install dist/*.whl && rm -rf dist
 
+COPY utils/fiftyone_ingedata fiftyone_ingedata
+
 # Use this instead if you want the latest FiftyOne release
 # RUN pip --no-cache-dir install fiftyone
 
@@ -121,4 +123,4 @@ ENV FIFTYONE_DATABASE_DIR=${ROOT_DIR}/db \
 #CMD ipython
 
 # Use this if you want the default behavior to instead be to launch the App
-CMD python /usr/local/lib/python/dist-packages/fiftyone/server/main.py --port 5151
+CMD python /usr/local/lib/python/dist-packages/fiftyone/server/main.py --port 5152

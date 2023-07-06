@@ -1,3 +1,4 @@
+
 .PHONY: app python docker docker-export
 
 .DEFAULT_GOAL := docker-export
@@ -8,8 +9,11 @@ app:
 python: app
 	@python setup.py sdist bdist_wheel
 
-docker: python
-	@docker build -t voxel51/fiftyone .
+docker-production: python
+	@docker build -t voxel51/fiftyone-production . -f ./Dockerfile.production
+
+docker-staging: python
+	@docker build -t voxel51/fiftyone-staging . -f ./Dockerfile.staging
 
 docker-export: docker
 	@docker save voxel51/fiftyone:latest | gzip > fiftyone.tar.gz
