@@ -1,21 +1,19 @@
+import { useTheme } from "@fiftyone/components";
+import * as fos from "@fiftyone/state";
+import { groupStatistics, isGroup as isGroupAtom } from "@fiftyone/state";
 import { Apps } from "@mui/icons-material";
 import Color from "color";
-import React, { Suspense } from "react";
+import React, { Suspense, useMemo } from "react";
 import { useRecoilValue, useSetRecoilState } from "recoil";
 import styled from "styled-components";
-
-import { useTheme } from "@fiftyone/components";
+import LoadingDots from "../../../components/src/components/Loading/LoadingDots";
 import { GridActionsRow } from "./Actions";
 import { Slider } from "./Common/RangeSlider";
 import { gridZoom, gridZoomRange } from "./Grid";
 import GroupSliceSelector from "./GroupSliceSelector";
-import { PathEntryCounts } from "./Sidebar/Entries/EntryCounts";
+import ResourceCount from "./ResourceCount";
 
-import * as fos from "@fiftyone/state";
-import { groupStatistics, isGroup } from "@fiftyone/state";
-import LoadingDots from "../../../components/src/components/Loading/LoadingDots";
-
-const SamplesHeader = styled.div`
+export const SamplesHeader = styled.div`
   position: absolute;
   top: 0;
   display: flex;
@@ -30,6 +28,7 @@ const SamplesHeader = styled.div`
     ${({ theme }) => theme.background.mediaSpace} 100%
   );
   margin-left: -1rem;
+  gap: 8px;
 `;
 
 const RightDiv = styled.div`
@@ -57,63 +56,21 @@ const SliderContainer = styled.div`
   padding-right: 1rem;
 `;
 
-const Count = () => {
-  let element = useRecoilValue(fos.elementNames);
-  const total = useRecoilValue(
-    fos.count({ path: "", extended: false, modal: false })
-  );
-  const group = useRecoilValue(isGroup);
-  if (group) {
-    element = {
-      plural: "groups",
-      singular: "group",
-    };
-  }
-
-  return (
-    <RightDiv>
-      <div>
-        <PathEntryCounts modal={false} path={""} />
-        &nbsp;
-        {total === 1 ? element.singular : element.plural}
-      </div>
-    </RightDiv>
-  );
-};
-
-const GroupsCount = () => {
-  let element = useRecoilValue(fos.elementNames);
-  const total = useRecoilValue(
-    fos.count({ path: "_", extended: false, modal: false })
-  );
-
-  const elementTotal = useRecoilValue(
-    fos.count({ path: "", extended: false, modal: false })
-  );
-
-  return (
-    <RightDiv>
-      <div>
-        <PathEntryCounts modal={false} path={"_"} />
-        &nbsp;
-        {total === 1 ? "group" : "groups"}
-        &nbsp; (<PathEntryCounts modal={false} path={""} />
-        &nbsp;
-        {elementTotal === 1 ? element.singular : element.plural})
-      </div>
-    </RightDiv>
-  );
-};
-
 const ImageContainerHeader = () => {
   const setGridZoom = useSetRecoilState(gridZoom);
   const gridZoomRangeValue = useRecoilValue(gridZoomRange);
   const theme = useTheme();
-  const group = useRecoilValue(isGroup);
+  const isGroup = useRecoilValue(isGroupAtom);
+  const groupSlices = useRecoilValue(fos.groupSlices);
   const groupStats = useRecoilValue(groupStatistics(false));
 
+  const shouldShowSliceSelector = useMemo(
+    () => isGroup && groupSlices.length > 1,
+    [isGroup, groupSlices]
+  );
+
   return (
-    <SamplesHeader>
+    <SamplesHeader data-cy={"fo-grid-actions"}>
       <GridActionsRow />
       <RightContainer>
         <Suspense
@@ -123,9 +80,9 @@ const ImageContainerHeader = () => {
             </RightDiv>
           }
         >
-          {groupStats === "group" ? <GroupsCount /> : <Count />}
+          <ResourceCount isGroup={groupStats === "group"} />
         </Suspense>
-        {group && (
+        {shouldShowSliceSelector && (
           <RightDiv>
             <GroupSliceSelector />
           </RightDiv>

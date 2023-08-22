@@ -2,17 +2,21 @@
 """
 Installs FiftyOne.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata
+
 import os
-from pkg_resources import DistributionNotFound, get_distribution
 import re
 from setuptools import setup, find_packages
 
 
-VERSION = "0.18.0"
+VERSION = "0.21.6"
 
 
 def get_version():
@@ -33,17 +37,19 @@ INSTALL_REQUIRES = [
     "aiofiles",
     "argcomplete",
     "boto3",
-    "dacite>=1.6.0",
+    "cachetools",
+    "dacite>=1.6.0,<1.8.0",
     "Deprecated",
-    "eventlet",
-    "future",
+    "ftfy",
     "hypercorn>=0.13.2",
+    "importlib-metadata; python_version<'3.8'",
     "Jinja2>=3",
+    # kaleido indirectly required by plotly for image export
+    # https://plotly.com/python/static-image-export/
     "kaleido",
     "matplotlib",
     "mongoengine==0.24.2",
-    "motor>=2.3",
-    "ndjson",
+    "motor>=2.5",
     "numpy",
     "packaging",
     "pandas",
@@ -51,24 +57,25 @@ INSTALL_REQUIRES = [
     "plotly>=4.14",
     "pprintpp",
     "psutil",
-    "pymongo>=3.11",
+    "pymongo>=3.12",
     "pytz",
     "PyYAML",
+    "regex",
     "retrying",
     "scikit-learn",
     "scikit-image",
     "setuptools",
     "sseclient-py>=1.7.2,<2",
     "sse-starlette>=0.10.3,<1",
-    "starlette==0.20.4",
+    "starlette>=0.24.0",
     "strawberry-graphql==0.138.1",
     "tabulate",
     "xmltodict",
     "universal-analytics-python3>=1.0.1,<2",
     # internal packages
-    "fiftyone-brain>=0.9.2,<0.10",
+    "fiftyone-brain>=0.13.1,<0.14",
     "fiftyone-db>=0.4,<0.5",
-    "voxel51-eta>=0.8.1,<0.9",
+    "voxel51-eta>=0.11,<0.12",
 ]
 
 
@@ -89,10 +96,10 @@ def choose_requirement(mains, secondary):
     for main in mains:
         try:
             name = re.split(r"[!<>=]", main)[0]
-            get_distribution(name)
+            metadata.version(name)
             chosen = main
             break
-        except DistributionNotFound:
+        except metadata.PackageNotFoundError:
             pass
 
     return str(chosen)
@@ -105,7 +112,7 @@ def get_install_requirements(install_requires, choose_install_requires):
     return install_requires
 
 
-EXTRAS_REQUIREMENTS = {"desktop": ["fiftyone-desktop>=0.24,<0.25"]}
+EXTRAS_REQUIREMENTS = {"desktop": ["fiftyone-desktop>=0.29,<0.30"]}
 
 
 with open("README.md", "r") as fh:

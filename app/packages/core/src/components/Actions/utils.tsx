@@ -5,13 +5,7 @@ import styled from "styled-components";
 
 import { useTheme } from "@fiftyone/components";
 import * as fos from "@fiftyone/state";
-import {
-  currentSlice,
-  groupId,
-  groupStatistics,
-  isGroup,
-  State,
-} from "@fiftyone/state";
+import { groupId, groupStatistics, isGroup, State } from "@fiftyone/state";
 import { getFetchFunction, toSnakeCase } from "@fiftyone/utilities";
 
 export const SwitcherDiv = styled.div`
@@ -70,7 +64,7 @@ export const tagStatistics = selectorFamily<
 >({
   key: "tagStatistics",
   get:
-    ({ modal, labels: count_labels }) =>
+    ({ modal, labels: countLabels }) =>
     async ({ get }) => {
       return await getFetchFunction()(
         "POST",
@@ -81,13 +75,14 @@ export const tagStatistics = selectorFamily<
           dataset: get(fos.datasetName),
           filters: get(modal ? fos.modalFilters : fos.filters),
 
-          groupData: get(isGroup)
-            ? {
-                id: modal ? get(groupId) : null,
-                slice: get(currentSlice(modal)),
-                mode: get(groupStatistics(modal)),
-              }
-            : null,
+          groupData:
+            get(isGroup) && get(fos.groupField)
+              ? {
+                  id: modal ? get(groupId) : null,
+                  slices: get(fos.currentSlices(modal)),
+                  mode: get(groupStatistics(modal)),
+                }
+              : null,
           hiddenLabels: get(fos.hiddenLabelsArray),
           modal,
           sampleId: modal ? get(fos.sidebarSampleId) : null,
@@ -98,7 +93,7 @@ export const tagStatistics = selectorFamily<
               ...data,
             })
           ),
-          targetLabels: count_labels,
+          targetLabels: countLabels,
           view: get(fos.view),
         })
       );
@@ -131,14 +126,16 @@ export const tagStats = selectorFamily<
   get:
     ({ modal, labels }) =>
     ({ get }) => {
-      const data = get(
-        labels
-          ? fos.labelTagCounts({ modal: false, extended: false })
-          : fos.sampleTagCounts({ modal: false, extended: false })
-      );
+      const data = Object.keys(
+        get(
+          labels
+            ? fos.labelTagCounts({ modal: false, extended: false })
+            : fos.sampleTagCounts({ modal: false, extended: false })
+        )
+      ).map((t) => [t, 0]);
 
       return {
-        ...data,
+        ...Object.fromEntries(data),
         ...get(tagStatistics({ modal, labels })).tags,
       };
     },
@@ -165,26 +162,36 @@ export const tagParameters = ({
   groupData: {
     id: string | null;
     slice: string | null;
+    slices: string[] | null;
     mode: "group" | "slice";
   } | null;
   targetLabels: boolean;
   sampleId: string | null;
 }) => {
-  const hasSelected =
-    selectedSamples.size || selectedLabels.length || hiddenLabels.length;
+  const shouldShowCurrentSample =
+    params.modal && selectedSamples.size == 0 && hiddenLabels.length == 0;
   const groups = groupData?.mode === "group";
+
+  const getSampleIds = () => {
+    if (shouldShowCurrentSample && !groups) {
+      if (groupData?.slices) {
+        return null;
+      }
+      return [sampleId];
+    } else if (selectedSamples.size) {
+      return [...selectedSamples];
+    }
+    return null;
+  };
 
   return {
     ...params,
     label_fields: activeFields,
     target_labels: targetLabels,
-    slice: !params.modal && !groups ? groupData?.slice : null,
-    sample_ids:
-      params.modal && !hasSelected && !groups
-        ? [sampleId]
-        : selectedSamples.size
-        ? [...selectedSamples]
-        : null,
+    slices: !groups ? groupData?.slices : null,
+    slice: groupData?.slice,
+    group_id: params.modal ? groupData?.id : null,
+    sample_ids: getSampleIds(),
     labels:
       params.modal && targetLabels && selectedLabels && selectedLabels.length
         ? toSnakeCase(selectedLabels)

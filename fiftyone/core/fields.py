@@ -1,13 +1,14 @@
 """
 Dataset sample fields.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
 from copy import deepcopy
 from datetime import date, datetime
 import numbers
+import re
 
 from bson import ObjectId, SON
 from bson.binary import Binary
@@ -198,7 +199,7 @@ def flatten_schema(
     include_private=False,
 ):
     """Returns a flattened copy of the given schema where all embedded document
-    fields are included as top-level keys of the
+    fields are included as top-level keys of the dictionary
 
     Args:
         schema: a dict mapping keys to :class:`Field` instances
@@ -241,7 +242,7 @@ def _flatten(
     ):
         schema[prefix] = field
 
-    if isinstance(field, (ListField, DictField)):
+    while isinstance(field, (ListField, DictField)):
         field = field.field
 
     if isinstance(field, EmbeddedDocumentField):
@@ -589,6 +590,16 @@ class StringField(mongoengine.fields.StringField, Field):
         self._info = info
 
 
+class ColorField(StringField):
+    """A string field that holds a hex color string like '#FF6D04'."""
+
+    def validate(self, value):
+        try:
+            fou.validate_color(value)
+        except ValueError as e:
+            self.error(str(e))
+
+
 class ListField(mongoengine.fields.ListField, Field):
     """A list field that wraps a standard :class:`Field`, allowing multiple
     instances of the field to be stored as a list in the database.
@@ -700,48 +711,11 @@ class DictField(mongoengine.fields.DictField, Field):
             self.field._set_dataset(dataset, path)
 
     def validate(self, value):
-        if not all(map(lambda k: etau.is_str(k), value)):
-            self.error("Dict fields must have string keys")
-
-        if self.field is not None:
-            for _value in value.values():
-                self.field.validate(_value)
-
-        if value is not None and not isinstance(value, dict):
-            self.error("Value must be a dict")
-
-
-class IntDictField(DictField):
-    """A :class:`DictField` whose keys are integers.
-
-    If this field is not set, its default value is ``{}``.
-
-    Args:
-        field (None): an optional :class:`Field` instance describing the type
-            of the values in the dict
-        description (None): an optional description
-        info (None): an optional info dict
-    """
-
-    def to_mongo(self, value):
-        if value is None:
-            return None
-
-        value = {str(k): v for k, v in value.items()}
-        return super().to_mongo(value)
-
-    def to_python(self, value):
-        if value is None:
-            return None
-
-        return {int(k): v for k, v in value.items()}
-
-    def validate(self, value):
         if not isinstance(value, dict):
             self.error("Value must be a dict")
 
-        if not all(map(lambda k: isinstance(k, numbers.Integral), value)):
-            self.error("Int dict fields must have integer keys")
+        if not all(map(lambda k: etau.is_str(k), value)):
+            self.error("Dict fields must have string keys")
 
         if self.field is not None:
             for _value in value.values():
@@ -1120,9 +1094,9 @@ class ClassesField(ListField):
         return etau.get_class_name(self)
 
 
-class TargetsField(IntDictField):
-    """A :class:`DictField` that stores mapping between integer keys and string
-    targets.
+class MaskTargetsField(DictField):
+    """A :class:`DictField` that stores mapping between integer keys or RGB
+    string hex keys and string targets.
 
     If this field is not set, its default value is ``{}``.
 
@@ -1137,8 +1111,87 @@ class TargetsField(IntDictField):
 
         super().__init__(**kwargs)
 
-    def __str__(self):
-        return etau.get_class_name(self)
+    def to_mongo(self, value):
+        if value is None:
+            return None
+
+        return super().to_mongo({str(k): v for k, v in value.items()})
+
+    def to_python(self, value):
+        if value is None:
+            return None
+
+        if is_integer_mask_targets(value):
+            return {int(k): v for k, v in value.items()}
+
+        return value
+
+    def validate(self, value):
+        if not isinstance(value, dict):
+            self.error("Value must be a dict")
+
+        if not (is_integer_mask_targets(value) or is_rgb_mask_targets(value)):
+            self.error(
+                "Mask target field keys must all either be integer keys or "
+                "string RGB hex keys (like #012abc)"
+            )
+
+        if self.field is not None:
+            for _value in value.values():
+                self.field.validate(_value)
+
+
+def is_integer_mask_targets(mask_targets):
+    """Determines whether the provided mask targets use integer keys.
+
+    Args:
+        mask_targets: a mask targets dict
+
+    Returns:
+        True/False
+    """
+    return all(map(is_integer_target, mask_targets.keys()))
+
+
+def is_integer_target(target):
+    """Determines whether the provided target is an integer.
+
+    Args:
+        target: an integer or RGB hex string
+
+    Returns:
+        True/False
+    """
+    return isinstance(target, numbers.Integral) or (
+        isinstance(target, str) and target.replace("-", "", 1).isdigit()
+    )
+
+
+def is_rgb_mask_targets(mask_targets):
+    """Determines whether the provided mask targets use RGB hex string keys.
+
+    Args:
+        mask_targets: a mask targets dict
+
+    Returns:
+        True/False
+    """
+    return all(map(is_rgb_target, mask_targets.keys()))
+
+
+def is_rgb_target(target):
+    """Determines whether the provided target is an RGB string.
+
+    Args:
+        target: an integer or RGB hex string
+
+    Returns:
+        True/False
+    """
+    return (
+        isinstance(target, str)
+        and re.search(r"^#(?:[0-9a-fA-F]{6})$", target) is not None
+    )
 
 
 class EmbeddedDocumentField(mongoengine.fields.EmbeddedDocumentField, Field):
@@ -1238,6 +1291,39 @@ class EmbeddedDocumentField(mongoengine.fields.EmbeddedDocumentField, Field):
     def _to_db_fields(self, field_names):
         return tuple(self._fields[f].db_field or f for f in field_names)
 
+    def has_field(self, path):
+        """Determines whether this field has the given embedded field.
+
+        Args:
+            path: the field name or ``embedded.field.name``
+
+        Returns:
+            True/False
+        """
+        return self.get_field(path) is not None
+
+    def get_field(self, path):
+        """Returns the field for the provided path, or ``None``.
+
+        Args:
+            path: a field name or ``embedded.field.name``
+
+        Returns:
+            a :class:`Field` instance or ``None``
+        """
+        chunks = path.split(".", 1)
+        if len(chunks) > 1:
+            field = self._fields.get(chunks[0], None)
+            while isinstance(field, ListField):
+                field = field.field
+
+            if not isinstance(field, EmbeddedDocumentField):
+                return None
+
+            return field.get_field(chunks[1])
+
+        return self._fields.get(path, None)
+
     def get_field_schema(
         self,
         ftype=None,
@@ -1318,7 +1404,7 @@ class EmbeddedDocumentField(mongoengine.fields.EmbeddedDocumentField, Field):
                     foo.validate_fields_match(_path, _field, _existing_field)
 
                 if recursive:
-                    if isinstance(_existing_field, ListField):
+                    while isinstance(_existing_field, ListField):
                         _existing_field = _existing_field.field
                         if isinstance(_field, ListField):
                             _field = _field.field
@@ -1409,6 +1495,17 @@ class EmbeddedDocumentListField(
             etau.get_class_name(self),
             etau.get_class_name(self.document_type),
         )
+
+
+class ReferenceField(mongoengine.fields.ReferenceField, Field):
+    """A reference field.
+
+    Args:
+        document_type: the :class:`fiftyone.core.odm.Document` type stored in
+            this field
+    """
+
+    pass
 
 
 _ARRAY_FIELDS = (VectorField, ArrayField)

@@ -2,7 +2,7 @@
 """
 Installs the ``fiftyone-db`` package.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -39,6 +39,9 @@ MONGODB_DOWNLOAD_URLS = {
     },
     "ubuntu2004": {
         "manylinux1_x86_64": "https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2004-5.0.4.tgz",
+    },
+    "ubuntu2204": {
+        "manylinux1_x86_64": "https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-ubuntu2204-6.0.5.tgz",
     },
 }
 

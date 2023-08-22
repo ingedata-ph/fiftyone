@@ -1,28 +1,28 @@
-import { ThemeProvider } from "@fiftyone/components";
-import { Loading, makeRoutes, Setup } from "@fiftyone/core";
+import { ErrorBoundary, Loading, ThemeProvider } from "@fiftyone/components";
+import { Setup, makeRoutes } from "@fiftyone/core";
+import { usePlugins } from "@fiftyone/plugins";
 import {
   BeforeScreenshotContext,
+  EventsContext,
+  State,
+  activeColorField,
+  getDatasetName,
+  getSavedViewName,
+  isModalActive,
   screenshotCallbacks,
+  stateSubscription,
+  useClearModal,
   useRefresh,
+  useReset,
+  useRouter,
   useScreenshot,
 } from "@fiftyone/state";
-import { getEventSource, toCamelCase } from "@fiftyone/utilities";
+import { env, getEventSource, toCamelCase } from "@fiftyone/utilities";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { RecoilRoot, useRecoilValue } from "recoil";
 import Network from "./Network";
 
-import { usePlugins } from "@fiftyone/plugins";
-import {
-  EventsContext,
-  getDatasetName,
-  modal,
-  State,
-  stateSubscription,
-  useClearModal,
-  useReset,
-  useRouter,
-} from "@fiftyone/state";
 import "./index.css";
 
 import { useErrorHandler } from "react-error-boundary";
@@ -52,22 +52,31 @@ const App: React.FC = ({}) => {
 
   useEffect(() => {
     readyState === AppReadyState.CLOSED && reset();
-  }, [readyState]);
+  }, [readyState, reset]);
 
   const screenshot = useScreenshot(
     new URLSearchParams(window.location.search).get("context")
   );
 
-  const isModalActive = Boolean(useRecoilValue(modal));
+  const isModalOpen = useRecoilValue(isModalActive);
+  const isCustomizeColorModalActive = Boolean(useRecoilValue(activeColorField));
   const handleError = useErrorHandler();
 
   useEffect(() => {
+    document.getElementById("modal")?.classList.toggle("modalon", isModalOpen);
+  }, [isModalOpen]);
+  useEffect(() => {
     document
-      .getElementById("modal")
-      ?.classList.toggle("modalon", isModalActive);
-  }, [isModalActive]);
+      .getElementById("colorModal")
+      ?.classList.toggle("modalon", isCustomizeColorModalActive);
+  }, [isCustomizeColorModalActive]);
 
   useEffect(() => {
+    if (env().VITE_NO_STATE) {
+      setReadyState(AppReadyState.OPEN);
+      return;
+    }
+
     const controller = new AbortController();
 
     getEventSource(
@@ -87,35 +96,48 @@ const App: React.FC = ({}) => {
             case Events.STATE_UPDATE: {
               const payload = JSON.parse(msg.data);
               const { colorscale, config, ...data } = payload.state;
-              payload.refresh && refresh();
 
+              payload.refresh && refresh();
               const state = {
                 ...toCamelCase(data),
                 view: data.view,
               } as State.Description;
-              let dataset = getDatasetName(contextRef.current);
-              if (readyStateRef.current !== AppReadyState.OPEN) {
-                if (dataset !== state.dataset) {
-                  dataset = state.dataset;
-                }
 
+              if (readyStateRef.current !== AppReadyState.OPEN) {
                 setReadyState(AppReadyState.OPEN);
+              }
+
+              const searchParams = new URLSearchParams(
+                context.history.location.search
+              );
+
+              if (state.savedViewSlug) {
+                searchParams.set(
+                  "view",
+                  encodeURIComponent(state.savedViewSlug)
+                );
               } else {
-                dataset = state.dataset;
+                searchParams.delete("view");
+              }
+
+              let search = searchParams.toString();
+              if (search.length) {
+                search = `?${search}`;
               }
 
               const path = state.dataset
-                ? `/datasets/${encodeURIComponent(state.dataset)}${
-                    window.location.search
-                  }`
-                : `/${window.location.search}`;
+                ? `/datasets/${encodeURIComponent(state.dataset)}${search}`
+                : `/${search}`;
 
               contextRef.current.history.replace(path, {
                 state,
                 colorscale,
                 config,
                 refresh: payload.refresh,
-                variables: dataset ? { view: state.view || null } : undefined,
+                // REQUIRED: here we define DatasetQuery GraphQL variables
+                variables: state.dataset
+                  ? { view: state.view || null }
+                  : undefined,
               });
 
               break;
@@ -130,7 +152,10 @@ const App: React.FC = ({}) => {
       },
       controller.signal,
       {
-        initializer: getDatasetName(contextRef.current),
+        initializer: {
+          dataset: getDatasetName(contextRef.current),
+          view: getSavedViewName(contextRef.current),
+        },
         subscription,
         events: [Events.DEACTIVATE_NOTEBOOK_CELL, Events.STATE_UPDATE],
       }
@@ -147,7 +172,7 @@ const App: React.FC = ({}) => {
       return loadingElement;
     case AppReadyState.OPEN:
       if (plugins.isLoading) return loadingElement;
-      if (plugins.error) return <Loading>Plugin error...</Loading>;
+      if (plugins.hasError) return <Loading>Plugin error...</Loading>;
       return <Network environment={environment} context={context} />;
     default:
       return <Setup />;
@@ -156,12 +181,16 @@ const App: React.FC = ({}) => {
 
 createRoot(document.getElementById("root") as HTMLDivElement).render(
   <RecoilRoot>
-    <BeforeScreenshotContext.Provider value={screenshotCallbacks}>
-      <EventsContext.Provider value={{ session: null }}>
-        <ThemeProvider>
-          <App />
-        </ThemeProvider>
-      </EventsContext.Provider>
-    </BeforeScreenshotContext.Provider>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <BeforeScreenshotContext.Provider value={screenshotCallbacks}>
+          <EventsContext.Provider
+            value={{ session: env().VITE_NO_STATE ? undefined : null }}
+          >
+            <App />
+          </EventsContext.Provider>
+        </BeforeScreenshotContext.Provider>
+      </ErrorBoundary>
+    </ThemeProvider>
   </RecoilRoot>
 );

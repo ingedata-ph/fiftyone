@@ -2,7 +2,7 @@
 Utilities for working with the
 `Kinetics dataset <https://deepmind.com/research/open-source/kinetics>`.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -248,6 +248,11 @@ class KineticsDatasetManager(object):
 
         split = self.info.split
         for e, videos in download_errors.items():
+            if not isinstance(e, (str, int, float, bool)) and e != None:
+                try:
+                    e = str(e)
+                except:
+                    e = "Cannot parse error message"
             if e in prev_errors[split]:
                 prev_errors[split][e].extend(videos)
                 prev_errors[split][e] = sorted(set(prev_errors[split][e]))

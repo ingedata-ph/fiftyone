@@ -1,7 +1,7 @@
 """
 Segmentation evaluation.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -16,6 +16,7 @@ import eta.core.image as etai
 import fiftyone.core.evaluation as foe
 import fiftyone.core.fields as fof
 import fiftyone.core.labels as fol
+import fiftyone.core.utils as fou
 import fiftyone.core.validation as fov
 
 from .base import BaseEvaluationResults
@@ -64,8 +65,9 @@ def evaluate_segmentations(
 
     .. note::
 
-        The mask value ``0`` is treated as a background class for the purposes
-        of computing evaluation metrics like precision and recall.
+        The mask values ``0`` and ``#000000`` are treated as a background class
+        for the purposes of computing evaluation metrics like precision and
+        recall.
 
     Args:
         samples: a :class:`fiftyone.core.collections.SampleCollection`
@@ -74,8 +76,8 @@ def evaluate_segmentations(
         gt_field ("ground_truth"): the name of the field containing the ground
             truth :class:`fiftyone.core.labels.Segmentation` instances
         eval_key (None): an evaluation key to use to refer to this evaluation
-        mask_targets (None): a dict mapping mask values to labels. If not
-            provided, the observed pixel values are used
+        mask_targets (None): a dict mapping pixel values or RGB hex strings to
+            labels. If not provided, the observed values are used as labels
         method ("simple"): a string specifying the evaluation method to use.
             Supported values are ``("simple")``
         **kwargs: optional keyword arguments for the constructor of the
@@ -109,14 +111,17 @@ class SegmentationEvaluationConfig(foe.EvaluationMethodConfig):
     Args:
         pred_field: the name of the field containing the predicted
             :class:`fiftyone.core.labels.Segmentation` instances
-        gt_field ("ground_truth"): the name of the field containing the ground
-            truth :class:`fiftyone.core.labels.Segmentation` instances
+        gt_field: the name of the field containing the ground truth
+            :class:`fiftyone.core.labels.Segmentation` instances
+        compute_dice (False): whether to compute the Dice coefficient for each
+            sample
     """
 
-    def __init__(self, pred_field, gt_field, **kwargs):
+    def __init__(self, pred_field, gt_field, compute_dice=False, **kwargs):
         super().__init__(**kwargs)
         self.pred_field = pred_field
         self.gt_field = gt_field
+        self.compute_dice = compute_dice
 
 
 class SegmentationEvaluation(foe.EvaluationMethod):
@@ -156,6 +161,12 @@ class SegmentationEvaluation(foe.EvaluationMethod):
             dataset.add_frame_field(pre_field, fof.FloatField)
             dataset.add_frame_field(rec_field, fof.FloatField)
 
+        if self.config.compute_dice:
+            dice_field = "%s_dice" % eval_key
+            dataset.add_sample_field(dice_field, fof.FloatField)
+            if processing_frames:
+                dataset.add_frame_field(dice_field, fof.FloatField)
+
     def evaluate_samples(self, samples, eval_key=None, mask_targets=None):
         """Evaluates the predicted segmentation masks in the given samples with
         respect to the specified ground truth masks.
@@ -182,6 +193,9 @@ class SegmentationEvaluation(foe.EvaluationMethod):
             "%s_recall" % eval_key,
         ]
 
+        if self.config.compute_dice:
+            fields.append("%s_dice" % eval_key)
+
         if processing_frames:
             prefix = samples._FRAMES_PREFIX + eval_key
             fields.extend(
@@ -192,7 +206,29 @@ class SegmentationEvaluation(foe.EvaluationMethod):
                 ]
             )
 
+            if self.config.compute_dice:
+                fields.append("%s_dice" % prefix)
+
         return fields
+
+    def rename(self, samples, eval_key, new_eval_key):
+        dataset = samples._dataset
+
+        in_fields = self.get_fields(dataset, eval_key)
+        out_fields = self.get_fields(dataset, new_eval_key)
+
+        in_sample_fields, in_frame_fields = fou.split_frame_fields(in_fields)
+        out_sample_fields, out_frame_fields = fou.split_frame_fields(
+            out_fields
+        )
+
+        if in_sample_fields:
+            fields = dict(zip(in_sample_fields, out_sample_fields))
+            dataset.rename_sample_fields(fields)
+
+        if in_frame_fields:
+            fields = dict(zip(in_frame_fields, out_frame_fields))
+            dataset.rename_frame_fields(fields)
 
     def cleanup(self, samples, eval_key):
         dataset = samples._dataset
@@ -203,6 +239,9 @@ class SegmentationEvaluation(foe.EvaluationMethod):
             "%s_precision" % eval_key,
             "%s_recall" % eval_key,
         ]
+
+        if self.config.compute_dice:
+            fields.append("%s_dice" % eval_key)
 
         dataset.delete_sample_fields(fields, error_level=1)
 
@@ -222,6 +261,8 @@ class SimpleEvaluationConfig(SegmentationEvaluationConfig):
             :class:`fiftyone.core.labels.Segmentation` instances
         gt_field: the name of the field containing the ground truth
             :class:`fiftyone.core.labels.Segmentation` instances
+        compute_dice (False): whether to compute the Dice coefficient for each
+            sample
         bandwidth (None): an optional bandwidth along the contours of the
             ground truth masks to which to restrict attention when computing
             accuracies. A typical value for this parameter is 5 pixels. By
@@ -230,16 +271,24 @@ class SimpleEvaluationConfig(SegmentationEvaluationConfig):
             precision and recall numbers on each sample
     """
 
+    def __init__(
+        self,
+        pred_field,
+        gt_field,
+        compute_dice=False,
+        bandwidth=None,
+        average="micro",
+        **kwargs,
+    ):
+        super().__init__(
+            pred_field, gt_field, compute_dice=compute_dice, **kwargs
+        )
+        self.bandwidth = bandwidth
+        self.average = average
+
     @property
     def method(self):
         return "simple"
-
-    def __init__(
-        self, pred_field, gt_field, bandwidth=None, average="micro", **kwargs
-    ):
-        super().__init__(pred_field, gt_field, **kwargs)
-        self.bandwidth = bandwidth
-        self.average = average
 
 
 class SimpleEvaluation(SegmentationEvaluation):
@@ -257,11 +306,15 @@ class SimpleEvaluation(SegmentationEvaluation):
         gt_field = self.config.gt_field
 
         if mask_targets is not None:
+            if fof.is_rgb_mask_targets(mask_targets):
+                mask_targets = {
+                    _hex_to_int(k): v for k, v in mask_targets.items()
+                }
+
             values, classes = zip(*sorted(mask_targets.items()))
         else:
             logger.info("Computing possible mask values...")
-            values = _get_mask_values(samples, pred_field, gt_field)
-            classes = [str(v) for v in values]
+            values, classes = _get_mask_values(samples, pred_field, gt_field)
 
         _samples = samples.select_fields([gt_field, pred_field])
         pred_field, processing_frames = samples._handle_frame_field(pred_field)
@@ -272,11 +325,14 @@ class SimpleEvaluation(SegmentationEvaluation):
 
         bandwidth = self.config.bandwidth
         average = self.config.average
+        compute_dice = self.config.compute_dice
 
         if eval_key is not None:
             acc_field = "%s_accuracy" % eval_key
             pre_field = "%s_precision" % eval_key
             rec_field = "%s_recall" % eval_key
+            if compute_dice:
+                dice_field = "%s_dice" % eval_key
 
         logger.info("Evaluating segmentations...")
         for sample in _samples.iter_samples(progress=True):
@@ -315,6 +371,8 @@ class SimpleEvaluation(SegmentationEvaluation):
                     image[acc_field] = facc
                     image[pre_field] = fpre
                     image[rec_field] = frec
+                    if compute_dice:
+                        image[dice_field] = _compute_dice_score(image_conf_mat)
 
             confusion_matrix += sample_conf_mat
 
@@ -326,21 +384,24 @@ class SimpleEvaluation(SegmentationEvaluation):
                 sample[acc_field] = sacc
                 sample[pre_field] = spre
                 sample[rec_field] = srec
+                if compute_dice:
+                    sample[dice_field] = _compute_dice_score(confusion_matrix)
+
                 sample.save()
 
         if nc > 0:
-            missing = classes[0] if values[0] == 0 else None
+            missing = classes[0] if values[0] in (0, "#000000") else None
         else:
             missing = None
 
         return SegmentationResults(
+            samples,
+            self.config,
+            eval_key,
             confusion_matrix,
             classes,
-            eval_key=eval_key,
-            gt_field=gt_field,
-            pred_field=pred_field,
             missing=missing,
-            samples=samples,
+            backend=self,
         )
 
 
@@ -348,25 +409,24 @@ class SegmentationResults(BaseEvaluationResults):
     """Class that stores the results of a segmentation evaluation.
 
     Args:
+        samples: the :class:`fiftyone.core.collections.SampleCollection` used
+        config: the :class:`SegmentationEvaluationConfig` used
+        eval_key: the evaluation key
         pixel_confusion_matrix: a pixel value confusion matrix
         classes: a list of class labels corresponding to the confusion matrix
-        eval_key (None): the evaluation key for the evaluation
-        gt_field (None): the name of the ground truth field
-        pred_field (None): the name of the predictions field
         missing (None): a missing (background) class
-        samples (None): the :class:`fiftyone.core.collections.SampleCollection`
-            for which the results were computed
+        backend (None): a :class:`SegmentationEvaluation` backend
     """
 
     def __init__(
         self,
+        samples,
+        config,
+        eval_key,
         pixel_confusion_matrix,
         classes,
-        eval_key=None,
-        gt_field=None,
-        pred_field=None,
         missing=None,
-        samples=None,
+        backend=None,
     ):
         pixel_confusion_matrix = np.asarray(pixel_confusion_matrix)
         ytrue, ypred, weights = self._parse_confusion_matrix(
@@ -374,40 +434,39 @@ class SegmentationResults(BaseEvaluationResults):
         )
 
         super().__init__(
+            samples,
+            config,
+            eval_key,
             ytrue,
             ypred,
             weights=weights,
-            eval_key=eval_key,
-            gt_field=gt_field,
-            pred_field=pred_field,
             classes=classes,
             missing=missing,
-            samples=samples,
+            backend=backend,
         )
 
         self.pixel_confusion_matrix = pixel_confusion_matrix
 
     def attributes(self):
-        return [
-            "cls",
-            "pixel_confusion_matrix",
-            "eval_key",
-            "gt_field",
-            "pred_field",
-            "classes",
-            "missing",
-        ]
+        return ["cls", "pixel_confusion_matrix", "classes", "missing"]
+
+    def dice_score(self):
+        """Computes the Dice score across all samples in the evaluation.
+
+        Returns:
+            the Dice score in ``[0, 1]``
+        """
+        return _compute_dice_score(self.pixel_confusion_matrix)
 
     @classmethod
-    def _from_dict(cls, d, samples, config, **kwargs):
+    def _from_dict(cls, d, samples, config, eval_key, **kwargs):
         return cls(
+            samples,
+            config,
+            eval_key,
             d["pixel_confusion_matrix"],
             d["classes"],
-            eval_key=d.get("eval_key", None),
-            gt_field=d.get("gt_field", None),
-            pred_field=d.get("pred_field", None),
             missing=d.get("missing", None),
-            samples=samples,
             **kwargs,
         )
 
@@ -441,6 +500,12 @@ def _parse_config(pred_field, gt_field, method, **kwargs):
 def _compute_pixel_confusion_matrix(
     pred_mask, gt_mask, values, bandwidth=None
 ):
+    if pred_mask.ndim == 3:
+        pred_mask = _rgb_array_to_int(pred_mask)
+
+    if gt_mask.ndim == 3:
+        gt_mask = _rgb_array_to_int(gt_mask)
+
     if pred_mask.shape != gt_mask.shape:
         msg = (
             "Resizing predicted mask with shape %s to match ground truth mask "
@@ -466,6 +531,14 @@ def _compute_pixel_confusion_matrix(
         return np.zeros((num_classes, num_classes), dtype=int)
 
 
+def _compute_dice_score(confusion_matrix):
+    confusion_matrix = np.asarray(confusion_matrix)
+    tp = np.diag(confusion_matrix).sum()
+    fp = confusion_matrix.sum() - tp
+    fn = fp
+    return 2 * tp / (2 * tp + fp + fn)
+
+
 def _extract_contour_band_values(pred_mask, gt_mask, bandwidth):
     band_mask = etai.get_contour_band_mask(gt_mask, bandwidth)
     return pred_mask[band_mask], gt_mask[band_mask]
@@ -473,7 +546,9 @@ def _extract_contour_band_values(pred_mask, gt_mask, bandwidth):
 
 def _compute_accuracy_precision_recall(confusion_matrix, values, average):
     missing = 0 if values[0] == 0 else None
-    results = SegmentationResults(confusion_matrix, values, missing=missing)
+    results = SegmentationResults(
+        None, None, None, confusion_matrix, values, missing=missing
+    )
     metrics = results.metrics(average=average)
     if metrics["support"] == 0:
         return None, None, None
@@ -487,6 +562,7 @@ def _get_mask_values(samples, pred_field, gt_field):
     gt_field, _ = samples._handle_frame_field(gt_field)
 
     values = set()
+    is_rgb = False
 
     for sample in _samples.iter_samples(progress=True):
         if processing_frames:
@@ -498,6 +574,40 @@ def _get_mask_values(samples, pred_field, gt_field):
             for field in (pred_field, gt_field):
                 seg = image[field]
                 if seg is not None and seg.has_mask:
-                    values.update(seg.get_mask().ravel())
+                    mask = seg.get_mask()
+                    if mask.ndim == 3:
+                        is_rgb = True
+                        mask = _rgb_array_to_int(mask)
 
-    return sorted(values)
+                    values.update(mask.ravel())
+
+    values = sorted(values)
+
+    if is_rgb:
+        classes = [_int_to_hex(v) for v in values]
+    else:
+        classes = [str(v) for v in values]
+
+    return values, classes
+
+
+def _rgb_array_to_int(mask):
+    return (
+        np.left_shift(mask[:, :, 0], 16, dtype=int)
+        + np.left_shift(mask[:, :, 1], 8, dtype=int)
+        + mask[:, :, 2]
+    )
+
+
+def _hex_to_int(hex_str):
+    r = int(hex_str[1:3], 16)
+    g = int(hex_str[3:5], 16)
+    b = int(hex_str[5:7], 16)
+    return (r << 16) + (g << 8) + b
+
+
+def _int_to_hex(value):
+    r = (value >> 16) & 255
+    g = (value >> 8) & 255
+    b = value & 255
+    return "#%02x%02x%02x" % (r, g, b)

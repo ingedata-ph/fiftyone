@@ -1,23 +1,22 @@
+import { AnimatePresence, motion } from "framer-motion";
 import * as React from "react";
-import { useLayer, useHover, Arrow } from "react-laag";
-import { motion, AnimatePresence } from "framer-motion";
+import { Arrow, useHover, useLayer } from "react-laag";
+import { PlacementType } from "react-laag/dist/PlacementType";
 
-import style from "./Tooltip.module.css";
 import { useTheme } from "../..";
+import style from "./Tooltip.module.css";
 
-const Tooltip = <P extends React.HTMLAttributes<T>, T extends HTMLElement>({
-  children,
-  text,
-}: {
-  children: React.DetailedReactHTMLElement<P, T>;
+const Tooltip: React.FC<{
+  children: React.ReactElement;
+  placement: PlacementType;
   text: string;
-}) => {
+}> = ({ children, text, placement = "top-center" }) => {
   const theme = useTheme();
   const [isOver, hoverProps] = useHover({ delayEnter: 100, delayLeave: 100 });
 
   const { triggerProps, layerProps, arrowProps, renderLayer } = useLayer({
     isOpen: isOver,
-    placement: "top-center",
+    placement,
     triggerOffset: 8,
   });
 
@@ -47,6 +46,7 @@ const Tooltip = <P extends React.HTMLAttributes<T>, T extends HTMLElement>({
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
               transition={{ duration: 0.1 }}
+              data-cy={`tooltip-${text}`}
               {...layerProps}
             >
               {text}

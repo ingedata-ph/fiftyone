@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 import { mergeWith } from "immutable";
 import mime from "mime";
@@ -11,6 +11,7 @@ import {
   BufferRange,
   Buffers,
   Coordinates,
+  CustomizeColor,
   Dimensions,
   DispatchEvent,
   Optional,
@@ -23,7 +24,7 @@ import {
   NetworkError,
   ServerError,
 } from "@fiftyone/utilities";
-import LookerWorker from "./worker.ts?worker&inline";
+import LookerWorker from "./worker/index.ts?worker&inline";
 
 /**
  * Shallow data-object comparison for equality
@@ -437,7 +438,13 @@ export const createWorker = (
   },
   dispatchEvent?: DispatchEvent
 ): Worker => {
-  const worker = new LookerWorker();
+  let worker: Worker = null;
+
+  try {
+    worker = new LookerWorker();
+  } catch {
+    worker = new Worker(new URL("./worker/index.ts", import.meta.url));
+  }
 
   worker.onerror = (error) => {
     dispatchEvent("error", error);
@@ -541,3 +548,31 @@ export const getMimeType = (sample: any) => {
 
 export const isFloatArray = (arr) =>
   arr instanceof Float32Array || arr instanceof Float64Array;
+
+// go through customizedColor array and check if any item.fieldColor has changed;
+export const hasColorChanged = (
+  prevColorScheme: CustomizeColor[],
+  nextColorScheme: CustomizeColor[]
+) => {
+  if (prevColorScheme?.length !== nextColorScheme?.length) {
+    return true;
+  }
+
+  if (!compareObjectArr(prevColorScheme, nextColorScheme)) {
+    return true;
+  }
+
+  return false;
+};
+
+// order does not matter
+function compareObjectArr(arr1: object[], arr2: object[]): boolean {
+  const sortedArr1 = arr1
+    .map((el) => JSON.stringify(el, Object.keys(el).sort()))
+    .sort();
+  const sortedArr2 = arr2
+    .map((el) => JSON.stringify(el, Object.keys(el).sort()))
+    .sort();
+
+  return JSON.stringify(sortedArr1) === JSON.stringify(sortedArr2);
+}

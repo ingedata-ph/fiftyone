@@ -1,32 +1,15 @@
-import { atom, atomFamily, useRecoilCallback } from "recoil";
-
-import { Sample, RGB } from "@fiftyone/looker/src/state";
-
-import { State } from "./types";
-
-export interface AppSample extends Sample {
-  _id: string;
-  support?: [number, number];
-}
-
-export interface SampleData {
-  sample: AppSample;
-  aspectRatio: number;
-  frameRate?: number;
-  frameNumber?: number;
-  urls: {
-    [field: string]: string;
-  };
-}
-
-export interface ModalNavigation {
-  index: number;
-  getIndex: (index: number) => void;
-}
-
-interface ModalSample extends SampleData {
-  navigation: ModalNavigation;
-}
+import { Sample } from "@fiftyone/looker/src/state";
+import { SpaceNodeJSON } from "@fiftyone/spaces";
+import { Field } from "@fiftyone/utilities";
+import {
+  AtomEffect,
+  atom,
+  atomFamily,
+  selector,
+  useRecoilCallback,
+} from "recoil";
+import { groupMediaTypesSet } from "./groups";
+import { ColorSchemeSetting, State } from "./types";
 
 export const refresher = atom<number>({
   key: "refresher",
@@ -42,11 +25,6 @@ export const useRefresh = () => {
     []
   );
 };
-
-export const modal = atom<ModalSample | null>({
-  key: "modal",
-  default: null,
-});
 
 export interface SortResults {
   count: boolean;
@@ -100,16 +78,17 @@ export const imageFilters = atomFamily<
   default: ({ filter }) => IMAGE_FILTERS[filter].default,
 });
 
-export const activePlot = atom({
+export const activePlot = atom<string>({
   key: "activePlot",
   default: "Labels",
 });
 
-export const loading = atom({
+export const loading = atom<boolean>({
   key: "loading",
   default: false,
 });
 
+// labels: whether label tag or sample tag
 export const tagging = atomFamily<boolean, { modal: boolean; labels: boolean }>(
   {
     key: "tagging",
@@ -117,11 +96,22 @@ export const tagging = atomFamily<boolean, { modal: boolean; labels: boolean }>(
   }
 );
 
+/**
+ * The state of the current dataset. Contains informations about the dataset, and the samples contained in it.
+ *
+ * See :py:class:\`fiftyone.core.dataset.Dataset\` for python documentation.
+ */
 export const dataset = atom<State.Dataset>({
   key: "dataset",
   default: null,
 });
 
+export const selectedViewName = atom<string>({
+  key: "selectedViewName",
+  default: null,
+});
+
+// only used in extended view, for tagging purpose
 export const selectedLabels = atom<State.SelectedLabelMap>({
   key: "selectedLabels",
   default: {},
@@ -132,6 +122,12 @@ export const selectedSamples = atom<Set<string>>({
   default: new Set(),
 });
 
+export const selectedSampleObjects = atom<Map<string, Sample>>({
+  key: "selectedSampleObjects",
+  default: new Map(),
+});
+
+// only used in extended view, for tagging purpose
 export const hiddenLabels = atom<State.SelectedLabelMap>({
   key: "hiddenLabels",
   default: {},
@@ -149,14 +145,14 @@ export const viewCounter = atom({
 
 export const DEFAULT_ALPHA = 0.7;
 
-export const alpha = atomFamily<number, boolean>({
+export const alpha = atom<number>({
   key: "alpha",
   default: DEFAULT_ALPHA,
 });
 
-export const colorSeed = atomFamily<number, boolean>({
+export const colorSeed = atom<number>({
   key: "colorSeed",
-  default: 1,
+  default: 0,
 });
 
 export const appTeamsIsOpen = atom({
@@ -184,19 +180,16 @@ export const similaritySorting = atom<boolean>({
   default: false,
 });
 
-export const sidebarOverride = atom<string>({
-  key: "sidebarOverride",
-  default: null,
-});
-
-export const extendedSelection = atom<string[]>({
+export const extendedSelection = atom<{ selection: string[]; scope?: string }>({
   key: "extendedSelection",
+  default: { selection: null },
+});
+export const extendedSelectionOverrideStage = atom<any>({
+  key: "extendedSelectionOverrideStage",
   default: null,
 });
 
-export const similarityParameters = atom<
-  State.SortBySimilarityParameters & { queryIds: string[] }
->({
+export const similarityParameters = atom<State.SortBySimilarityParameters>({
   key: "similarityParameters",
   default: null,
 });
@@ -211,6 +204,11 @@ export const hoveredSample = atom<Sample>({
   default: null,
 });
 
+export const lastLoadedDatasetNameState = atom<string>({
+  key: "lastLoadedDatasetNameState",
+  default: "",
+});
+
 export const lookerPanels = atom({
   key: "lookerPanels",
   default: {
@@ -219,20 +217,154 @@ export const lookerPanels = atom({
   },
 });
 
+// recoil effect that syncs state with local storage
+export const getBrowserStorageEffectForKey =
+  <T>(
+    key: string,
+    props: {
+      map?: (value: unknown) => unknown;
+      sessionStorage?: boolean;
+      valueClass?: "string" | "stringArray" | "number" | "boolean";
+      prependDatasetNameInKey?: boolean;
+      useJsonSerialization?: boolean;
+    } = {
+      sessionStorage: false,
+      valueClass: "string",
+      prependDatasetNameInKey: false,
+      useJsonSerialization: false,
+    }
+  ): AtomEffect<T> =>
+  ({ setSelf, onSet, getPromise }) => {
+    (async () => {
+      const {
+        valueClass,
+        sessionStorage,
+        useJsonSerialization,
+        prependDatasetNameInKey,
+      } = props;
+
+      const storage = sessionStorage
+        ? window.sessionStorage
+        : window.localStorage;
+
+      if (prependDatasetNameInKey) {
+        const datasetName = (await getPromise(dataset))?.name;
+        key = `${datasetName}_${key}`;
+      }
+
+      const value = storage.getItem(key);
+      let procesedValue;
+
+      if (useJsonSerialization) {
+        procesedValue = JSON.parse(value);
+      } else if (valueClass === "number") {
+        procesedValue = Number(value);
+      } else if (valueClass === "boolean") {
+        procesedValue = value === "true";
+      } else if (valueClass === "stringArray") {
+        if (value?.length > 0) {
+          procesedValue = value?.split(",");
+        } else {
+          procesedValue = [];
+        }
+      } else {
+        procesedValue = value;
+      }
+
+      if (value != null) setSelf(procesedValue);
+
+      onSet((newValue, _oldValue, isReset) => {
+        if (props.map) {
+          newValue = props.map(newValue) as T;
+        }
+        if (isReset || newValue === undefined) {
+          storage.removeItem(key);
+        } else {
+          storage.setItem(
+            key,
+            useJsonSerialization
+              ? JSON.stringify(newValue)
+              : (newValue as string)
+          );
+        }
+      });
+    })();
+  };
+
+export const groupMediaIsCarouselVisibleSetting = atom<boolean>({
+  key: "groupMediaIsCarouselVisibleSetting",
+  default: true,
+  effects: [
+    getBrowserStorageEffectForKey("groupMediaIsCarouselVisible", {
+      sessionStorage: true,
+      valueClass: "boolean",
+    }),
+  ],
+});
+
+export const groupMedia3dVisibleSetting = atom<boolean>({
+  key: "groupMediaIs3dVisibleSetting",
+  default: true,
+  effects: [
+    getBrowserStorageEffectForKey("groupMediaIs3DVisible", {
+      sessionStorage: true,
+      valueClass: "boolean",
+    }),
+  ],
+});
+
+export const onlyPcd = selector<boolean>({
+  key: "onlyPcd",
+  get: ({ get }) => {
+    const set = get(groupMediaTypesSet);
+    const hasPcd = set.has("point_cloud");
+    return set.size === 1 && hasPcd;
+  },
+});
+
+export const groupMediaIs3dVisible = selector<boolean>({
+  key: "groupMedia3dVisible",
+  get: ({ get }) => {
+    const set = get(groupMediaTypesSet);
+    const hasPcd = set.has("point_cloud");
+    return get(groupMedia3dVisibleSetting) && hasPcd;
+  },
+});
+
+export const groupMediaIsMainVisibleSetting = atom<boolean>({
+  key: "groupMediaIsMainVisibleSetting",
+  default: true,
+  effects: [
+    getBrowserStorageEffectForKey("groupMediaIsMainVisible", {
+      sessionStorage: true,
+      valueClass: "boolean",
+    }),
+  ],
+});
+
+export const groupMediaIsMainVisible = selector<boolean>({
+  key: "groupMediaIsMainVisible",
+  get: ({ get }) => {
+    const set = get(groupMediaTypesSet);
+    const hasPcd = set.has("point_cloud");
+    return get(groupMediaIsMainVisibleSetting) && (!hasPcd || set.size > 1);
+  },
+});
+
 export const theme = atom<"dark" | "light">({
   key: "theme",
   default: "dark",
-  effects: [
-    ({ setSelf, onSet }) => {
-      const muiModeKey = "mui-mode";
-      const muiMode = localStorage.getItem(muiModeKey) as "light" | "dark";
-      if (muiMode != null) setSelf(muiMode);
-      onSet((newValue, oldValue, isReset) => {
-        if (isReset) localStorage.removeItem(muiModeKey);
-        else localStorage.setItem(muiModeKey, newValue);
-      });
-    },
-  ],
+  effects: [getBrowserStorageEffectForKey("mui-mode")],
+});
+
+export const canEditSavedViews = atom({
+  key: "canEditSavedViews",
+  default: true,
+});
+
+export const canEditCustomColors = atom({
+  key: "canEditCustomColors",
+  default: true,
 });
 
 export const compactLayout = atom({
@@ -243,4 +375,48 @@ export const compactLayout = atom({
 export const readOnly = atom({
   key: "readOnly",
   default: false,
+});
+
+export const sessionSpaces = atom<SpaceNodeJSON>({
+  key: "sessionSpaces",
+  default: {
+    id: "root",
+    children: [
+      {
+        id: "default-samples-node",
+        children: [],
+        type: "Samples",
+        pinned: true,
+      },
+    ],
+    type: "panel-container",
+    activeChild: "default-samples-node",
+  },
+});
+
+// the active field for customize color modal
+export const activeColorField = atom<
+  { field: Field; expandedPath: string } | string | null
+>({
+  key: "activeColorField",
+  default: null,
+});
+
+export const sessionColorScheme = atom<ColorSchemeSetting>({
+  key: "sessionColorScheme",
+  default: {
+    colorPool: [],
+    fields: [],
+  },
+});
+
+export const isUsingSessionColorScheme = atom<boolean>({
+  key: "isUsingSessionColorScheme",
+  default: false,
+});
+
+// sidebar filter vs. visibility mode
+export const isSidebarFilterMode = atom<boolean>({
+  key: "isSidebarFilterMode",
+  default: true,
 });

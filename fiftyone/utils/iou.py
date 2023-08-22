@@ -1,7 +1,7 @@
 """
 Intersection over union (IoU) utilities.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -9,6 +9,7 @@ import contextlib
 import logging
 
 import numpy as np
+import scipy.spatial as sp
 
 import eta.core.numutils as etan
 import eta.core.utils as etau
@@ -16,6 +17,8 @@ import eta.core.utils as etau
 import fiftyone.core.labels as fol
 import fiftyone.core.utils as fou
 import fiftyone.core.validation as fov
+
+from .utils3d import compute_cuboid_iou as _compute_cuboid_iou
 
 sg = fou.lazy_import("shapely.geometry")
 so = fou.lazy_import("shapely.ops")
@@ -34,11 +37,21 @@ def compute_ious(
     """Computes the pairwise IoUs between the predicted and ground truth
     objects.
 
+    For polylines, IoUs are computed assuming the shapes are solid (filled),
+    regardless of their ``filled`` attributes.
+
+    For keypoints, "IoUs" are computed via
+    `object keypoint similarity <https://cocodataset.org/#keypoints-eval>`_.
+
     Args:
-        preds: a list of predicted :class:`fiftyone.core.labels.Detection` or
-            :class:`fiftyone.core.labels.Polyline` instances
-        gts: a list of ground truth :class:`fiftyone.core.labels.Detection` or
-            :class:`fiftyone.core.labels.Polyline` instances
+        preds: a list of predicted
+            :class:`fiftyone.core.labels.Detection`,
+            :class:`fiftyone.core.labels.Polyline`, or
+            :class:`fiftyone.core.labels.Keypoints` instances
+        gts: a list of ground truth
+            :class:`fiftyone.core.labels.Detection`,
+            :class:`fiftyone.core.labels.Polyline`, or
+            :class:`fiftyone.core.labels.Keypoints` instances
         iscrowd (None): an optional name of a boolean attribute or boolean
             function to apply to each label that determines whether a ground
             truth object is a crowd. If provided, the area of the predicted
@@ -83,6 +96,9 @@ def compute_ious(
         return _compute_polyline_ious(
             preds, gts, error_level, iscrowd=iscrowd, classwise=classwise
         )
+
+    if isinstance(preds[0], fol.Keypoint):
+        return _compute_keypoint_similarities(preds, gts, classwise=classwise)
 
     if use_masks:
         # @todo when tolerance is None, consider using dense masks rather than
@@ -143,11 +159,13 @@ def compute_max_ious(
         sample_collection: a
             :class:`fiftyone.core.collections.SampleCollection`
         label_field: a label field of type
-            :class:`fiftyone.core.labels.Detections` or
-            :class:`fiftyone.core.labels.Polylines`
+            :class:`fiftyone.core.labels.Detections`,
+            :class:`fiftyone.core.labels.Polylines`, or
+            :class:`fiftyone.core.labels.Keypoints`
         other_field (None): another label field of type
-            :class:`fiftyone.core.labels.Detections` or
-            :class:`fiftyone.core.labels.Polylines`
+            :class:`fiftyone.core.labels.Detections`,
+            :class:`fiftyone.core.labels.Polylines`, or
+            :class:`fiftyone.core.labels.Keypoints`
         iou_attr ("max_iou"): the label attribute in which to store the max IoU
         id_attr (None): an optional attribute in which to store the label ID of
             the maximum overlapping label
@@ -159,7 +177,7 @@ def compute_max_ious(
     fov.validate_collection_label_fields(
         sample_collection,
         (label_field, other_field),
-        (fol.Detections, fol.Polylines),
+        (fol.Detections, fol.Polylines, fol.Keypoints),
         same_type=True,
     )
 
@@ -256,8 +274,9 @@ def find_duplicates(
         sample_collection: a
             :class:`fiftyone.core.collections.SampleCollection`
         label_field: a label field of type
-            :class:`fiftyone.core.labels.Detections` or
-            :class:`fiftyone.core.labels.Polylines`
+            :class:`fiftyone.core.labels.Detections`,
+            :class:`fiftyone.core.labels.Polylines`, or
+            :class:`fiftyone.core.labels.Keypoints`
         iou_thresh (0.999): the IoU threshold to use to determine whether
             labels are duplicates
         method ("simple"): the duplicate removal method to use. The supported
@@ -268,7 +287,9 @@ def find_duplicates(
         a list of IDs of duplicate labels
     """
     fov.validate_collection_label_fields(
-        sample_collection, label_field, (fol.Detections, fol.Polylines)
+        sample_collection,
+        label_field,
+        (fol.Detections, fol.Polylines, fol.Keypoints),
     )
 
     _label_field, is_frame_field = sample_collection._handle_frame_field(
@@ -398,6 +419,43 @@ def _find_duplicates_greedy(ious, iou_thresh):
     return sorted(dup_inds)
 
 
+def _get_bbox_dim(detection):
+    if all(
+        getattr(detection, a, None) is not None
+        for a in ("dimensions", "location", "rotation")
+    ):
+        return 3
+
+    return 2
+
+
+def _compute_bbox_iou(gt, pred, gt_crowd=False):
+    gx, gy, gw, gh = gt.bounding_box
+    gt_area = gh * gw
+
+    px, py, pw, ph = pred.bounding_box
+    pred_area = ph * pw
+
+    # Width of intersection
+    w = min(px + pw, gx + gw) - max(px, gx)
+    if w <= 0:
+        return 0
+
+    # Height of intersection
+    h = min(py + ph, gy + gh) - max(py, gy)
+    if h <= 0:
+        return 0
+
+    inter = h * w
+
+    if gt_crowd:
+        union = pred_area
+    else:
+        union = pred_area + gt_area - inter
+
+    return min(etan.safe_divide(inter, union), 1)
+
+
 def _compute_bbox_ious(preds, gts, iscrowd=None, classwise=False):
     is_symmetric = preds is gts
 
@@ -414,11 +472,14 @@ def _compute_bbox_ious(preds, gts, iscrowd=None, classwise=False):
         else:
             gts = _polylines_to_detections(gts)
 
+    if _get_bbox_dim(gts[0]) == 3:
+        bbox_iou_fcn = _compute_cuboid_iou
+    else:
+        bbox_iou_fcn = _compute_bbox_iou
+
     ious = np.zeros((len(preds), len(gts)))
 
     for j, (gt, gt_crowd) in enumerate(zip(gts, gt_crowds)):
-        gx, gy, gw, gh = gt.bounding_box
-        gt_area = gh * gw
 
         for i, pred in enumerate(preds):
             if is_symmetric and i < j:
@@ -428,27 +489,7 @@ def _compute_bbox_ious(preds, gts, iscrowd=None, classwise=False):
             elif classwise and pred.label != gt.label:
                 continue
             else:
-                px, py, pw, ph = pred.bounding_box
-                pred_area = ph * pw
-
-                # Width of intersection
-                w = min(px + pw, gx + gw) - max(px, gx)
-                if w <= 0:
-                    continue
-
-                # Height of intersection
-                h = min(py + ph, gy + gh) - max(py, gy)
-                if h <= 0:
-                    continue
-
-                inter = h * w
-
-                if gt_crowd:
-                    union = pred_area
-                else:
-                    union = pred_area + gt_area - inter
-
-                iou = min(etan.safe_divide(inter, union), 1)
+                iou = bbox_iou_fcn(gt, pred, gt_crowd=gt_crowd)
 
             ious[i, j] = iou
 
@@ -599,6 +640,52 @@ def _compute_segment_ious(preds, gts):
     return ious
 
 
+def _compute_keypoint_similarities(preds, gts, classwise=False):
+    sims = np.zeros((len(preds), len(gts)))
+    for j, gt in enumerate(gts):
+        for i, pred in enumerate(preds):
+            if classwise and pred.label != gt.label:
+                continue
+
+            sims[i, j] = _compute_object_keypoint_similarity(gt, pred)
+
+    return sims
+
+
+def _compute_object_keypoint_similarity(gt, pred):
+    gtp = np.array(gt.points, dtype=float)
+    predp = np.array(pred.points, dtype=float)
+
+    # Use extent of GT points as proxy for box area
+    scale = np.sqrt(np.prod(np.nanmax(gtp, axis=0) - np.nanmin(gtp, axis=0)))
+    scale = np.maximum(0.0, np.minimum(scale, 1.0))
+
+    # If GT points are None/nan/inf: skip
+    # If pred points are None/nan/inf: use max distance
+    dists = []
+    for g, p in zip(gtp, predp):
+        if not np.isfinite(g).all():
+            continue
+
+        if np.isfinite(p).all():
+            d = sp.distance.euclidean(g, p)
+        else:
+            # Max distance
+            d = 1
+
+        dists.append(d)
+
+    dists = np.array(dists)
+    n = len(dists)
+
+    if n == 0:
+        return 0.0
+
+    # object keypoint similarity with kappa == 1
+    # https://cocodataset.org/#keypoints-eval
+    return np.sum(np.exp(-(dists**2) / (2 * (scale**2)))) / n
+
+
 def _polylines_to_detections(polylines):
     detections = []
     for polyline in polylines:
@@ -636,7 +723,7 @@ def _polylines_to_shapely(polylines, error_level):
     polys = []
     for polyline in polylines:
         try:
-            poly = polyline.to_shapely()
+            poly = polyline.to_shapely(filled=True)
 
             # Cleanup invalid (eg overlapping or self-intersecting) geometries
             # https://shapely.readthedocs.io/en/stable/manual.html#shapely.ops.unary_union

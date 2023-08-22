@@ -95,6 +95,12 @@ statistics about your dataset.
         macro avg       0.27      0.57      0.35      1311
      weighted avg       0.42      0.68      0.51      1311
 
+
+.. note::
+    For details on micro, macro, and weighted averaging, see the 
+    `sklearn.metrics documentation  <https://scikit-learn.org/stable/modules/generated/sklearn.metrics.precision_recall_fscore_support.html#sklearn.metrics.precision_recall_fscore_support>`_.
+
+
 Sample metrics
 --------------
 
@@ -190,13 +196,25 @@ are included in the current view.
    :alt: detection-evaluation
    :align: center
 
+.. _managing-evaluations:
+
 Managing evaluations
 --------------------
 
 When you run an evaluation with an ``eval_key`` argument, the evaluation is
-recorded on the dataset and you can retrieve information about it later, delete
-it, or even :ref:`retrieve the view <load-evaluation-view>` that you evaluated
-on:
+recorded on the dataset and you can retrieve information about it later, rename
+it, delete it (along with any modifications to your dataset that were performed
+by it), and :ref:`retrieve the view <load-evaluation-view>` that you evaluated
+on using the following methods on your dataset:
+
+-   :meth:`list_evaluations() <fiftyone.core.collections.SampleCollection.list_evaluations>`
+-   :meth:`get_evaluation_info() <fiftyone.core.collections.SampleCollection.get_evaluation_info>`
+-   :meth:`load_evaluation_results() <fiftyone.core.collections.SampleCollection.load_evaluation_results>`
+-   :meth:`load_evaluation_view() <fiftyone.core.collections.SampleCollection.load_evaluation_view>`
+-   :meth:`rename_evaluation() <fiftyone.core.collections.SampleCollection.rename_evaluation>`
+-   :meth:`delete_evaluation() <fiftyone.core.collections.SampleCollection.delete_evaluation>`
+
+The example below demonstrates the basic interface:
 
 .. code-block:: python
     :linenos:
@@ -212,9 +230,13 @@ on:
     results = dataset.load_evaluation_results("eval_predictions")
     results.print_report()
 
+    # Rename the evaluation
+    # This will automatically rename any evaluation fields on your dataset
+    dataset.rename_evaluation("eval_predictions", "eval")
+
     # Delete the evaluation
     # This will remove any evaluation data that was populated on your dataset
-    dataset.delete_evaluation("eval_predictions")
+    dataset.delete_evaluation("eval")
 
 The sections below discuss evaluating various types of predictions in more
 detail.
@@ -650,8 +672,9 @@ __________
 You can use the
 :meth:`evaluate_detections() <fiftyone.core.collections.SampleCollection.evaluate_detections>`
 method to evaluate the predictions of an object detection model stored in a
-|Detections| or |Polylines| field of your dataset or of a temporal detection
-model stored in a |TemporalDetections| field of your dataset.
+|Detections|, |Polylines|, or |Keypoints| field of your dataset or of a
+temporal detection model stored in a |TemporalDetections| field of your
+dataset.
 
 Invoking
 :meth:`evaluate_detections() <fiftyone.core.collections.SampleCollection.evaluate_detections>`
@@ -682,13 +705,23 @@ method supports all of the following task types:
 -   :ref:`Object detection <object-detection>`
 -   :ref:`Instance segmentations <instance-segmentation>`
 -   :ref:`Polygon detection <polylines>`
+-   :ref:`Keypoints <keypoints>`
 -   :ref:`Temporal detections <temporal-detection>`
+-   :ref:`3D detections <3d-detections>`
 
 The only difference between each task type is in how the IoU between objects is
-calculated. Specifically, for instance segmentations and polygons, IoUs are
-computed between the polgyonal shapes rather than their rectangular bounding
-boxes. For temporal detections, IoU is computed between the 1D support of two
-temporal segments.
+calculated:
+
+-   For object detections, IoUs are computed between each pair of bounding boxes
+-   For instance segmentations and polygons, IoUs are computed between the
+    polgyonal shapes rather than their rectangular bounding boxes
+-   For keypoint tasks,
+    `object keypoint similarity <https://cocodataset.org/#keypoints-eval>`_
+    is computed for each pair of objects, using the extent of the ground truth
+    keypoints as a proxy for the area of the object's bounding box, and
+    assuming uniform falloff (:math:`\kappa`)
+-   For temporal detections, IoU is computed between the 1D support of two
+    temporal segments
 
 For object detection tasks, the ground truth and predicted objects should be
 stored in |Detections| format.
@@ -715,6 +748,15 @@ polylines).
     than the actual polygonal geometries for IoU calculations, you can pass
     ``use_boxes=True`` to
     :meth:`evaluate_detections() <fiftyone.core.collections.SampleCollection.evaluate_detections>`.
+
+For keypoint tasks, each |Keypoint| instance must contain point arrays of equal
+length and semantic ordering.
+
+.. note::
+
+    If a particular point is missing or not visible for a |Keypoint| instance,
+    use nan values for its coordinates. :ref:`See here <keypoints>` for more
+    information about structuring keypoints.
 
 For temporal detection tasks, the ground truth and predicted objects should be
 stored in |TemporalDetections| format.
@@ -1618,8 +1660,9 @@ of each sample is recorded in top-level fields of each sample:
 
 .. note::
 
-    The mask value ``0`` is treated as a background class for the purposes of
-    computing evaluation metrics like precision and recall.
+    The mask values ``0`` and ``#000000`` are treated as a background class
+    for the purposes of computing evaluation metrics like precision and
+    recall.
 
 The example below demonstrates segmentation evaluation by comparing the
 masks generated by two DeepLabv3 models (with

@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 
 import { Optional, StateUpdate, VideoState } from "../state";
@@ -121,7 +121,7 @@ export class PlayButtonElement extends BaseElement<VideoState, HTMLDivElement> {
     this.pause.setAttribute("viewBox", "0 0 24 24");
 
     let path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("fill", "var(--joy-palette-text-secondary)");
+    path.setAttribute("fill", "var(--fo-palette-text-secondary)");
     path.setAttribute("d", "M6 19h4V5H6v14zm8-14v14h4V5h-4z");
     this.pause.appendChild(path);
 
@@ -208,6 +208,7 @@ export class PlayButtonElement extends BaseElement<VideoState, HTMLDivElement> {
         this.element.appendChild(this.play);
         this.element.title = "Play (space)";
         this.element.style.cursor = "pointer";
+        this.element.setAttribute("data-cy", "looker-video-play-button");
       }
       this.isPlaying = playing;
       this.isBuffering = buffering || !loaded;
@@ -218,8 +219,8 @@ export class PlayButtonElement extends BaseElement<VideoState, HTMLDivElement> {
       path.setAttribute(
         "fill",
         this.singleFrame
-          ? "var(--joy-palette-text-tertiary)"
-          : "var(--joy-palette-text-secondary)"
+          ? "var(--fo-palette-text-tertiary)"
+          : "var(--fo-palette-text-secondary)"
       );
       this.element.style.cursor = this.singleFrame ? "unset" : "pointer";
       this.element.title = this.singleFrame ? "Only one frame" : "Play (space)";
@@ -374,6 +375,7 @@ export class SeekBarElement extends BaseElement<VideoState, HTMLInputElement> {
 export class TimeElement extends BaseElement<VideoState> {
   createHTMLElement() {
     const element = document.createElement("div");
+    element.setAttribute("data-cy", "looker-video-time");
     element.classList.add(lookerTime);
     element.style.gridArea = "2 / 5 / 2 / 5";
     return element;

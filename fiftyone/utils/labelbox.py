@@ -2,7 +2,7 @@
 Utilities for working with annotations in
 `Labelbox format <https://labelbox.com/docs/exporting-data/export-format-detail>`_.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -14,7 +14,6 @@ from uuid import uuid4
 import warnings
 import webbrowser
 
-import ndjson
 import numpy as np
 
 import eta.core.image as etai
@@ -85,7 +84,7 @@ class LabelboxBackendConfig(foua.AnnotationBackendConfig):
         self.members = members
         self.classes_as_attrs = classes_as_attrs
 
-        # store privately so it isn't serialized
+        # store privately so these aren't serialized
         self._api_key = api_key
 
     @property
@@ -102,6 +101,9 @@ class LabelboxBackendConfig(foua.AnnotationBackendConfig):
             return True
 
         return False
+
+    def load_credentials(self, url=None, api_key=None):
+        self._load_parameters(url=url, api_key=api_key)
 
 
 class LabelboxBackend(foua.AnnotationBackend):
@@ -172,11 +174,11 @@ class LabelboxBackend(foua.AnnotationBackend):
             _experimental=self.config._experimental,
         )
 
-    def upload_annotations(self, samples, launch_editor=False):
+    def upload_annotations(self, samples, anno_key, launch_editor=False):
         api = self.connect_to_api()
 
         logger.info("Uploading media to Labelbox...")
-        results = api.upload_samples(samples, self)
+        results = api.upload_samples(samples, anno_key, self)
         logger.info("Upload complete")
 
         if launch_editor:
@@ -455,6 +457,19 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         for project_id in project_ids:
             self.delete_project(project_id, delete_datasets=delete_datasets)
 
+    def delete_unused_ontologies(self):
+        """Deletes unused ontologies from the Labelbox server."""
+        deleted_ontologies = []
+        unused_ontologies = self._client.get_unused_ontologies()
+        while unused_ontologies:
+            for o in unused_ontologies:
+                deleted_ontologies.append(o)
+                self._client.delete_unused_ontology(o)
+
+            unused_ontologies = self._client.get_unused_ontologies()
+
+        logger.info("Deleted %d ontologies." % len(deleted_ontologies))
+
     def launch_editor(self, url=None):
         """Launches the Labelbox editor in your default web browser.
 
@@ -471,7 +486,7 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         """Uploads the media for the given samples to Labelbox.
 
         This method uses ``labelbox.schema.dataset.Dataset.create_data_rows()``
-        to add data in batches, and sets the external ID of each DataRow to the
+        to add data in batches, and sets the global key of each DataRow to the
         ID of the corresponding sample.
 
         Args:
@@ -485,24 +500,27 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         media_paths, sample_ids = samples.values([media_field, "id"])
 
         upload_info = []
-        for media_path, sample_id in zip(media_paths, sample_ids):
-            item_url = self._client.upload_file(media_path)
-            upload_info.append(
-                {
-                    lb.DataRow.row_data: item_url,
-                    lb.DataRow.external_id: sample_id,
-                }
-            )
+
+        with fou.ProgressBar(iters_str="samples") as pb:
+            for media_path, sample_id in pb(zip(media_paths, sample_ids)):
+                item_url = self._client.upload_file(media_path)
+                upload_info.append(
+                    {
+                        lb.DataRow.row_data: item_url,
+                        lb.DataRow.global_key: sample_id,
+                    }
+                )
 
         task = lb_dataset.create_data_rows(upload_info)
         task.wait_till_done()
 
-    def upload_samples(self, samples, backend):
+    def upload_samples(self, samples, anno_key, backend):
         """Uploads the given samples to Labelbox according to the given
         backend's annotation and server configuration.
 
         Args:
             samples: a :class:`fiftyone.core.collections.SampleCollection`
+            anno_key: the annotation key
             backend: a :class:`LabelboxBackend` to use to perform the upload
 
         Returns:
@@ -514,6 +532,7 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         project_name = config.project_name
         members = config.members
         classes_as_attrs = config.classes_as_attrs
+        is_video = samples.media_type == fomm.VIDEO
 
         for label_field, label_info in label_schema.items():
             if label_info["existing_field"]:
@@ -531,7 +550,7 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         self.upload_data(samples, dataset, media_field=media_field)
 
         project = self._setup_project(
-            project_name, dataset, label_schema, classes_as_attrs
+            project_name, dataset, label_schema, classes_as_attrs, is_video
         )
 
         if members:
@@ -543,7 +562,13 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         frame_id_map = self._build_frame_id_map(samples)
 
         return LabelboxAnnotationResults(
-            samples, config, id_map, project_id, frame_id_map, backend=backend
+            samples,
+            config,
+            anno_key,
+            id_map,
+            project_id,
+            frame_id_map,
+            backend=backend,
         )
 
     def download_annotations(self, results):
@@ -574,7 +599,7 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
 
         for d in labels_json:
             labelbox_id = d["DataRow ID"]
-            sample_id = d["External ID"]
+            sample_id = d["Global Key"]
 
             if sample_id is None:
                 logger.warning(
@@ -585,7 +610,9 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
             metadata = self._get_sample_metadata(project, sample_id)
             if metadata is None:
                 logger.warning(
-                    "Skipping sample '%s' with no metadata", sample_id
+                    "Skipping sample '%s' with no metadata, likely due to not "
+                    "finding a DataRow with a matching Global Key",
+                    sample_id,
                 )
                 continue
 
@@ -676,10 +703,18 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         return frame_id_map
 
     def _setup_project(
-        self, project_name, dataset, label_schema, classes_as_attrs
+        self, project_name, dataset, label_schema, classes_as_attrs, is_video
     ):
-        project = self._client.create_project(name=project_name)
-        project.datasets.connect(dataset)
+        media_type = lb.MediaType.Video if is_video else lb.MediaType.Image
+        project = self._client.create_project(
+            name=project_name,
+            media_type=media_type,
+            queue_mode=lb.QueueMode.Batch,
+        )
+        project.create_batch(
+            name=str(uuid4()),
+            data_rows=dataset.data_rows(),
+        )
 
         self._setup_editor(project, label_schema, classes_as_attrs)
 
@@ -763,14 +798,14 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
             if attr_type == "text":
                 attr = lbo.Classification(
                     class_type=class_type,
-                    instructions=attr_name,
+                    name=attr_name,
                 )
             else:
                 attr_values = attr_info["values"]
                 options = [lbo.Option(value=str(v)) for v in attr_values]
                 attr = lbo.Classification(
                     class_type=class_type,
-                    instructions=attr_name,
+                    name=attr_name,
                     options=options,
                 )
 
@@ -812,27 +847,27 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
                     prefix = "field:%s_class:%s_attr:" % (label_field, str(sc))
                     sub_attrs = deepcopy(attrs)
                     for attr in sub_attrs:
-                        attr.instructions = prefix + attr.instructions
+                        attr.name = prefix + attr.name
 
                 options.append(lbo.Option(value=str(sc), options=sub_attrs))
 
         if label_type == "scalar" and not classes:
             classification = lbo.Classification(
                 class_type=lbo.Classification.Type.TEXT,
-                instructions=name,
+                name=name,
             )
             classifications.append(classification)
         elif label_type == "classifications":
             classification = lbo.Classification(
                 class_type=lbo.Classification.Type.CHECKLIST,
-                instructions=name,
+                name=name,
                 options=options,
             )
             classifications.append(classification)
         else:
             classification = lbo.Classification(
                 class_type=lbo.Classification.Type.RADIO,
-                instructions=name,
+                name=name,
                 options=options,
             )
             classifications.append(classification)
@@ -899,7 +934,7 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
 
         classes_attr = lbo.Classification(
             class_type=lbo.Classification.Type.RADIO,
-            instructions="class_name",
+            name="class_name",
             options=options,
             required=True,
         )
@@ -908,12 +943,15 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
 
     def _get_sample_metadata(self, project, sample_id):
         metadata = None
-        for dataset in project.datasets():
-            try:
-                data_row = dataset.data_row_for_external_id(sample_id)
-                metadata = data_row.media_attributes
-            except lb.exceptions.ResourceNotFoundError:
-                pass
+        try:
+            data_row_id_response = (
+                self._client.get_data_row_ids_for_global_keys([sample_id])
+            )
+            data_row_id = data_row_id_response["results"][0]
+            data_row = self._client.get_data_row(data_row_id)
+            metadata = data_row.media_attributes
+        except:
+            pass
 
         return metadata
 
@@ -921,7 +959,7 @@ class LabelboxAnnotationAPI(foua.AnnotationAPI):
         url = label_dict["frames"]
         headers = {"Authorization": "Bearer %s" % self._api_key}
         response = requests.get(url, headers=headers)
-        return ndjson.loads(response.text)
+        return etas.load_ndjson(response.text)
 
     def _download_project_labels(self, project_id=None, project=None):
         if project is None:
@@ -1252,21 +1290,18 @@ class LabelboxAnnotationResults(foua.AnnotationResults):
     """
 
     def __init__(
-        self, samples, config, id_map, project_id, frame_id_map, backend=None
+        self,
+        samples,
+        config,
+        anno_key,
+        id_map,
+        project_id,
+        frame_id_map,
+        backend=None,
     ):
-        super().__init__(samples, config, id_map, backend=backend)
+        super().__init__(samples, config, anno_key, id_map, backend=backend)
         self.project_id = project_id
         self.frame_id_map = frame_id_map
-
-    def load_credentials(self, url=None, api_key=None):
-        """Load the Labelbox credentials from the given keyword arguments or
-        the FiftyOne annotation config.
-
-        Args:
-            url (None): the url of the Labelbox server
-            api_key (None): the Labelbox API key
-        """
-        self._load_config_parameters(url=url, api_key=api_key)
 
     def launch_editor(self):
         """Launches the Labelbox editor and loads the project for this
@@ -1375,10 +1410,11 @@ class LabelboxAnnotationResults(foua.AnnotationResults):
         return status
 
     @classmethod
-    def _from_dict(cls, d, samples, config):
+    def _from_dict(cls, d, samples, config, anno_key):
         return cls(
             samples,
             config,
+            anno_key,
             d["id_map"],
             d["project_id"],
             d["frame_id_map"],
@@ -2123,7 +2159,8 @@ def _make_mask(instance_uri, color):
     }
 
 
-# https://labelbox.com/docs/exporting-data/export-format-detail#video
+# Parse v1 export format
+# https://docs.labelbox.com/reference/export-video-annotations
 def _parse_video_labels(video_label_d, frame_size):
     url_or_filepath = video_label_d["frames"]
     label_d_list = _download_or_load_ndjson(url_or_filepath)
@@ -2136,7 +2173,8 @@ def _parse_video_labels(video_label_d, frame_size):
     return frames
 
 
-# https://labelbox.com/docs/exporting-data/export-format-detail#images
+# Parse v1 export format
+# https://docs.labelbox.com/reference/export-image-annotations#annotation-export-formats
 def _parse_image_labels(label_d, frame_size, class_attr=None):
     labels = {}
 

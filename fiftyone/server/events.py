@@ -1,7 +1,7 @@
 """
-FiftyOne Server events
+FiftyOne Server events.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -11,13 +11,15 @@ import typing as t
 from datetime import datetime
 
 import asyncio
+from bson import json_util
 from sse_starlette import ServerSentEvent
 from starlette.requests import Request
 
-import fiftyone as fo
 import fiftyone.core.context as focx
-from fiftyone.core.json import FiftyOneJSONEncoder
+import fiftyone.core.dataset as fod
 from fiftyone.core.session.events import (
+    add_screenshot,
+    CaptureNotebookCell,
     CloseSession,
     DeactivateNotebookCell,
     ReactivateNotebookCell,
@@ -27,7 +29,7 @@ from fiftyone.core.session.events import (
     StateUpdate,
 )
 import fiftyone.core.state as fos
-from fiftyone.server.query import serialize_dataset
+import fiftyone.core.utils as fou
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,10 @@ async def dispatch_event(
         subscription: the calling subscription id
         event: the event
     """
+    if isinstance(event, CaptureNotebookCell) and focx.is_databricks_context():
+        add_screenshot(event)
+        return
+
     if isinstance(event, StateUpdate):
         global _state
         _state = event.state
@@ -83,21 +89,14 @@ async def add_event_listener(
     data = await _initialize_listener(payload)
     try:
         if data.is_app:
-            d = asdict(
-                StateUpdate(state=data.state),
-                dict_factory=dict_factory,
-            )
-            if data.state.dataset is not None:
-                d["dataset"] = await serialize_dataset(
-                    data.state.dataset.name,
-                    data.state.view._serialize()
-                    if data.state.view is not None
-                    else [],
-                )
-
             yield ServerSentEvent(
                 event=StateUpdate.get_event_name(),
-                data=FiftyOneJSONEncoder.dumps(d),
+                data=json_util.dumps(
+                    asdict(
+                        StateUpdate(state=data.state.serialize()),
+                        dict_factory=dict_factory,
+                    )
+                ),
             )
 
         while True:
@@ -116,24 +115,18 @@ async def add_event_listener(
 
             events = sorted(events, key=lambda event: event[0])
 
-            for (_, event) in events:
-                d = asdict(event, dict_factory=dict_factory)
-
-                if (
-                    data.is_app
-                    and isinstance(event, StateUpdate)
-                    and event.state.dataset is not None
-                ):
-                    d["dataset"] = await serialize_dataset(
-                        event.state.dataset.name,
-                        event.state.view._serialize()
-                        if event.state.view is not None
-                        else [],
+            for _, event in events:
+                if isinstance(event, StateUpdate):
+                    # we copy here as this is a shared object
+                    event = StateUpdate(
+                        state=event.state.serialize(), refresh=event.refresh
                     )
 
                 yield ServerSentEvent(
                     event=event.get_event_name(),
-                    data=FiftyOneJSONEncoder.dumps(d),
+                    data=json_util.dumps(
+                        asdict(event, dict_factory=dict_factory)
+                    ),
                 )
 
             await asyncio.sleep(0.2)
@@ -209,7 +202,9 @@ async def dispatch_polling_event_listener(
 
 
 def get_state() -> fos.StateDescription:
-    """Get the current state description singleton on the server
+    """Get the current state description singleton on the server if it
+    exists. Otherwise, initializes and sets the state description with
+    default values.
 
     Returns:
         the :class:`fiftyone.core.state.StateDescription` server singleton
@@ -250,16 +245,59 @@ async def _initialize_listener(payload: ListenPayload) -> InitializedListener:
         _app_count += 1
 
     current = state.dataset.name if state.dataset is not None else None
-    if is_app and payload.initializer != current:
-        if payload.initializer is not None:
+    current_saved_view_slug = (
+        fou.to_slug(state.view.name)
+        if state.view is not None and state.view.name
+        else None
+    )
+    if not isinstance(payload.initializer, fos.StateDescription):
+        update = False
+        if (
+            payload.initializer.dataset
+            and payload.initializer.dataset != current
+        ):
+            update = True
             try:
-                state.dataset = fo.load_dataset(payload.initializer)
+                state.dataset = fod.load_dataset(payload.initializer.dataset)
+                state.selected = []
+                state.selected_labels = []
+                state.view = None
             except:
                 state.dataset = None
-            state.selected = []
-            state.selected_labels = []
-            state.view = None
+                state.selected = []
+                state.selected_labels = []
+                state.view = None
+            else:
+                if payload.initializer.view:
+                    try:
+                        doc = state.dataset._get_saved_view_doc(
+                            payload.initializer.view, slug=True
+                        )
+                        state.view = state.dataset.load_saved_view(doc.name)
+                        state.selected = []
+                        state.selected_labels = []
+                        state.view_name = doc.name
+                    except:
+                        pass
+        elif (
+            payload.initializer.view
+            and payload.initializer.view != current_saved_view_slug
+        ):
+            update = True
+            try:
+                doc = state.dataset._get_saved_view_doc(
+                    payload.initializer.view, slug=True
+                )
+                state.view = state.dataset.load_saved_view(doc.name)
+                state.selected = []
+                state.selected_labels = []
+            except:
+                state.view = None
+                state.selected = []
+                state.selected_labels = []
+                pass
 
+        if update:
             await dispatch_event(payload.subscription, StateUpdate(state))
 
     elif not is_app:
@@ -279,3 +317,15 @@ async def _initialize_listener(payload: ListenPayload) -> InitializedListener:
     _requests[payload.subscription] = request_listeners
 
     return InitializedListener(is_app, request_listeners, state)
+
+
+_PORT = None
+
+
+def set_port(port: int):
+    global _PORT
+    _PORT = port
+
+
+def get_port() -> int:
+    return _PORT

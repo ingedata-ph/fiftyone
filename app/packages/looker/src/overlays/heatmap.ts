@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 import {
   get32BitColor,
@@ -7,7 +7,7 @@ import {
   getRGBA,
   getRGBAColor,
 } from "@fiftyone/utilities";
-import { ARRAY_TYPES, NumpyResult, TypedArray } from "../numpy";
+import { ARRAY_TYPES, OverlayMask, TypedArray } from "../numpy";
 import { BaseState, Coordinates } from "../state";
 import { isFloatArray } from "../util";
 import {
@@ -21,7 +21,7 @@ import {
 import { sizeBytes, strokeCanvasRect, t } from "./util";
 
 interface HeatMap {
-  data: NumpyResult;
+  data: OverlayMask;
   image: ArrayBuffer;
 }
 
@@ -203,7 +203,7 @@ export default class HeatmapOverlay<State extends BaseState>
       return 0;
     }
 
-    if (state.options.coloring.by === "label") {
+    if (state.options.coloring.by === "value") {
       const index = Math.round(
         (Math.max(value - start, 0) / (stop - start)) *
           (state.options.coloring.scale.length - 1)
@@ -230,6 +230,11 @@ export default class HeatmapOverlay<State extends BaseState>
     if (index < 0) {
       return null;
     }
+
+    if (this.label.map.data.channels > 1) {
+      return this.targets[index * this.label.map.data.channels];
+    }
+
     return this.targets[index];
   }
 }

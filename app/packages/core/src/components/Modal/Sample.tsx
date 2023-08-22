@@ -1,25 +1,27 @@
-import { useRecoilValue } from "recoil";
+import { AbstractLooker } from "@fiftyone/looker";
+import {
+  Lookers,
+  ModalSample,
+  modalSample,
+  modalSampleId,
+  useClearModal,
+  useHoveredSample,
+} from "@fiftyone/state";
 import React, { MutableRefObject, useCallback, useRef, useState } from "react";
+import { RecoilValueReadOnly, useRecoilValue } from "recoil";
 import { SampleBar } from "./Bars";
-import { modal, useClearModal, useHoveredSample } from "@fiftyone/state";
 import Looker from "./Looker";
-import { VideoLooker } from "@fiftyone/looker";
 
-const Sample: React.FC = () => {
-  const data = useRecoilValue(modal);
-
-  if (!data) {
-    throw new Error("no data");
-  }
-
-  const lookerRef = useRef<VideoLooker>();
-
-  const {
-    sample: { _id },
-    navigation,
-  } = data;
-  const clearModal = useClearModal();
-
+export const SampleWrapper = ({
+  children,
+  actions,
+  lookerRef,
+  sampleAtom = modalSample,
+}: React.PropsWithChildren<{
+  lookerRef?: MutableRefObject<Lookers | undefined>;
+  actions?: boolean;
+  sampleAtom?: RecoilValueReadOnly<ModalSample>;
+}>) => {
   const [hovering, setHovering] = useState(false);
 
   const timeout: MutableRefObject<number | null> = useRef<number>(null);
@@ -31,14 +33,18 @@ const Sample: React.FC = () => {
   const update = useCallback(() => {
     !hovering && setHovering(true);
     timeout.current && clearTimeout(timeout.current);
-    timeout.current = setTimeout(clear, 3000);
+    timeout.current = setTimeout(clear, 3000) as unknown as number;
 
     return () => {
       timeout.current && clearTimeout(timeout.current);
     };
   }, [clear, hovering]);
   const hoveringRef = useRef(false);
-  const hover = useHoveredSample(data.sample, { update, clear });
+  const sample = useRecoilValue(sampleAtom);
+  const hover = useHoveredSample(sample.sample, {
+    update,
+    clear,
+  });
 
   return (
     <div
@@ -46,23 +52,42 @@ const Sample: React.FC = () => {
       {...hover.handlers}
     >
       <SampleBar
-        sampleId={_id}
+        sampleId={sample.id}
         lookerRef={lookerRef}
         visible={hovering}
         hoveringRef={hoveringRef}
+        actions={actions}
       />
-      <Looker
-        key={_id}
-        lookerRef={lookerRef}
-        onNext={() => navigation.getIndex(navigation.index + 1)}
-        onClose={clearModal}
-        onPrevious={
-          navigation.index > 0
-            ? () => navigation.getIndex(navigation.index - 1)
-            : undefined
-        }
-      />
+      {children}
     </div>
+  );
+};
+
+interface SampleProps {
+  lookerRefCallback: (looker: Lookers) => void;
+  lookerRef?: MutableRefObject<Lookers | undefined>;
+  actions?: boolean;
+}
+
+const Sample = ({
+  lookerRefCallback,
+  lookerRef: propsLookerRef,
+  actions,
+}: SampleProps) => {
+  const lookerRef = useRef<Lookers | undefined>(undefined);
+
+  const ref = propsLookerRef || lookerRef;
+
+  const id = useRecoilValue(modalSampleId);
+
+  return (
+    <SampleWrapper lookerRef={ref} actions={actions}>
+      <Looker
+        key={`looker-${id}`}
+        lookerRef={ref}
+        lookerRefCallback={lookerRefCallback}
+      />
+    </SampleWrapper>
   );
 };
 

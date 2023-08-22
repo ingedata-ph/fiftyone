@@ -1,33 +1,28 @@
-import React, { useContext, useState } from "react";
-import { selector, Snapshot, useRecoilCallback, useRecoilValue } from "recoil";
-import { useSpring } from "@react-spring/web";
-
+import {
+  useToClips,
+  useToEvaluationPatches,
+  useToPatches,
+} from "@fiftyone/state";
 import {
   CLIPS_FRAME_FIELDS,
   CLIPS_SAMPLE_FIELDS,
   EMBEDDED_DOCUMENT_FIELD,
-  getFetchFunction,
   PATCHES_FIELDS,
-  toSnakeCase,
 } from "@fiftyone/utilities";
-
+import { useSpring } from "@react-spring/web";
+import React, { MutableRefObject, RefObject, useState } from "react";
+import { selector, useRecoilValue } from "recoil";
 import {
-  RouterContext,
-  useSetView,
-  useUnprocessedStateUpdate,
-} from "@fiftyone/state";
-import {
-  OBJECT_PATCHES,
-  EVALUATION_PATCHES,
   CLIPS_VIEWS,
+  EVALUATION_PATCHES,
+  OBJECT_PATCHES,
 } from "../../utils/links";
 
-import Popout from "./Popout";
-import { ActionOption } from "./Common";
-import { SwitcherDiv, SwitchDiv } from "./utils";
 import { useTheme } from "@fiftyone/components";
 import * as fos from "@fiftyone/state";
-import { State } from "@fiftyone/state";
+import { ActionOption } from "./Common";
+import Popout from "./Popout";
+import { SwitchDiv, SwitcherDiv } from "./utils";
 
 export const patchesFields = selector<string[]>({
   key: "patchesFields",
@@ -69,99 +64,27 @@ export const clipsFields = selector<string[]>({
 const evaluationKeys = selector<string[]>({
   key: "evaluationKeys",
   get: ({ get }) => {
-    return get(fos.dataset).evaluations.map(({ key }) => key);
+    const paths = get(fos.labelFields({}));
+    const valid = paths.filter((p) =>
+      get(
+        fos.meetsType({
+          path: p,
+          ftype: EMBEDDED_DOCUMENT_FIELD,
+          embeddedDocType: PATCHES_FIELDS,
+        })
+      )
+    );
+
+    const evals = get(fos.dataset).evaluations.filter(
+      (e) =>
+        valid.includes(e.config.predField) || valid.includes(e.config.gtField)
+    );
+
+    const keys = evals.map(({ key }) => key);
+
+    return keys;
   },
 });
-
-const useToPatches = () => {
-  const onComplete = useRecoilCallback(
-    ({ set }) =>
-      () => {
-        set(fos.patching, false);
-      },
-    []
-  );
-  const setView = useSetView(true, true, onComplete);
-  return useRecoilCallback(
-    ({ set }) =>
-      async (field) => {
-        set(fos.patching, true);
-        setView(
-          (v) => v,
-          [
-            {
-              _cls: "fiftyone.core.stages.ToPatches",
-              kwargs: [
-                ["field", field],
-                ["_state", null],
-              ],
-            },
-          ]
-        );
-      },
-    []
-  );
-};
-
-const useToClips = () => {
-  const onComplete = useRecoilCallback(
-    ({ set }) =>
-      () => {
-        set(fos.patching, false);
-      },
-    []
-  );
-  const setView = useSetView(true, true, onComplete);
-  return useRecoilCallback(
-    ({ set }) =>
-      async (field) => {
-        set(fos.patching, true);
-        setView(
-          (v) => v,
-          [
-            {
-              _cls: "fiftyone.core.stages.ToClips",
-              kwargs: [
-                ["field_or_expr", field],
-                ["_state", null],
-              ],
-            },
-          ]
-        );
-      },
-    []
-  );
-};
-
-const useToEvaluationPatches = () => {
-  const onComplete = useRecoilCallback(
-    ({ set }) =>
-      () => {
-        set(fos.patching, false);
-      },
-    []
-  );
-  const setView = useSetView(true, true, onComplete);
-  return useRecoilCallback(
-    ({ set }) =>
-      async (evaluation) => {
-        set(fos.patching, true);
-        setView(
-          (v) => v,
-          [
-            {
-              _cls: "fiftyone.core.stages.ToEvaluationPatches",
-              kwargs: [
-                ["eval_key", evaluation],
-                ["_state", null],
-              ],
-            },
-          ]
-        );
-      },
-    []
-  );
-};
 
 const LabelsClips = ({ close }) => {
   const fields = useRecoilValue(clipsFields);
@@ -201,6 +124,7 @@ const LabelsPatches = ({ close }) => {
       {fields.map((field) => {
         return (
           <ActionOption
+            id="labels-patches"
             key={field}
             text={field}
             title={`Switch to patches view for the "${field}" field`}
@@ -252,9 +176,10 @@ const EvaluationPatches = ({ close }) => {
 
 type PatcherProps = {
   close: () => void;
+  anchorRef?: MutableRefObject<unknown>;
 };
 
-const Patcher = ({ bounds, close }: PatcherProps) => {
+const Patcher = ({ bounds, close, anchorRef }: PatcherProps) => {
   const theme = useTheme();
   const isVideo =
     useRecoilValue(fos.isVideoDataset) && useRecoilValue(fos.isRootView);
@@ -274,7 +199,7 @@ const Patcher = ({ bounds, close }: PatcherProps) => {
     cursor: labels ? "pointer" : "default",
   });
   return (
-    <Popout modal={false} bounds={bounds}>
+    <Popout modal={false} bounds={bounds} fixed anchorRef={anchorRef}>
       <SwitcherDiv>
         <SwitchDiv
           style={labelProps}

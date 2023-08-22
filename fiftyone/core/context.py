@@ -1,20 +1,35 @@
 """
 Context utilities.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
 import json
 import os
 import typing as t
+from urllib.parse import urlparse
+
+try:
+    import IPython.display
+except:
+    pass
+
 
 _COLAB = "COLAB"
 _DATABRICKS = "DATABRICKS"
 _IPYTHON = "IPYTHON"
 _NONE = "NONE"
 
+_DATABRICKS_PROXY = None
+_DATABRICKS_HOST = None
+
 _context = None
+
+
+def init_context():
+    """Initializes context settings."""
+    _get_context()
 
 
 def is_notebook_context():
@@ -126,34 +141,72 @@ def _get_context():
 
 
 def get_url(
-    address: str, port: int, subscription: t.Optional[str] = None
+    address: str,
+    port: int,
+    proxy_url: str = None,
+    **kwargs: t.Dict[str, str],
 ) -> str:
     context = _get_context()
+
     if context == _COLAB:
         # pylint: disable=no-name-in-module,import-error
         from google.colab.output import eval_js
 
         _url = eval_js(f"google.colab.kernel.proxyPort({port})")
     elif _context == _DATABRICKS:
-        import IPython
-
-        ipython = IPython.get_ipython()
-        dbutils = ipython.user_ns["dbutils"]
-        ctx = json.loads(
-            dbutils.entry_point.getDbutils().notebook().getContext().toJson()
-        )
-        ctx_tags = ctx["tags"]
-        browser_host_name = ctx_tags["browserHostName"]
-        org_id = ctx_tags["orgId"]
-        cluster_id = ctx_tags["clusterId"]
-        _url = f"https://{browser_host_name}/driver-proxy/o/{org_id}/{cluster_id}/{port}/"
+        _url = _get_databricks_proxy_url(port)
+        kwargs["proxy"] = _get_databricks_proxy(port)
+        kwargs["context"] = "databricks"
+    elif proxy_url:
+        _url = proxy_url if proxy_url.endswith("/") else f"{proxy_url}/"
+        path = urlparse(_url).path
+        if path != "/":
+            kwargs["proxy"] = path
     else:
         _url = f"http://{address}:{port}/"
 
-    if subscription:
-        return f"{_url}?context={_get_context().lower()}&subscription={subscription}"
+    params = "&".join([f"{k}={v}" for k, v in kwargs.items()])
+    if params:
+        _url = f"{_url}?{params}"
 
     return _url
+
+
+def _get_databricks_proxy(port: int):
+    _set_databricks()
+    global _DATABRICKS_PROXY
+
+    return f"{_DATABRICKS_PROXY}{port}/"
+
+
+def _get_databricks_proxy_url(port: int):
+    _set_databricks()
+    global _DATABRICKS_HOST
+    global _DATABRICKS_PROXY
+
+    return f"https://{_DATABRICKS_HOST}{_DATABRICKS_PROXY}{port}/"
+
+
+def _set_databricks() -> str:
+    global _DATABRICKS_HOST
+    global _DATABRICKS_PROXY
+
+    if _DATABRICKS_PROXY:
+        return
+
+    import IPython
+
+    shell = IPython.get_ipython()
+    dbutils = shell.user_ns["dbutils"]
+    data = json.loads(
+        dbutils.entry_point.getDbutils().notebook().getContext().toJson()
+    )["tags"]
+
+    _DATABRICKS_HOST = data["browserHostName"]
+
+    org_id = data["orgId"]
+    cluster_id = data["clusterId"]
+    _DATABRICKS_PROXY = f"/driver-proxy/o/{org_id}/{cluster_id}/"
 
 
 class ContextError(EnvironmentError):

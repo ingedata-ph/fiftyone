@@ -1,4 +1,4 @@
-import { ErrorBoundary, Loading, RouteRenderer } from "@fiftyone/components";
+import { Loading, RouteRenderer } from "@fiftyone/components";
 import * as fos from "@fiftyone/state";
 import { RelayEnvironmentKey } from "@fiftyone/state";
 
@@ -27,9 +27,7 @@ const Network: React.FC<{
       environmentKey={RelayEnvironmentKey}
     >
       <fos.RouterContext.Provider value={context}>
-        <ErrorBoundary>
-          <Renderer />
-        </ErrorBoundary>
+        <Renderer />
       </fos.RouterContext.Provider>
     </RecoilRelayEnvironmentProvider>
   );
@@ -38,14 +36,12 @@ const Network: React.FC<{
 export const NetworkRenderer = ({ makeRoutes }) => {
   const { context, environment } = fos.useRouter(makeRoutes, []);
 
-  const isModalActive = Boolean(useRecoilValue(fos.modal));
+  const isModalOpen = useRecoilValue(fos.isModalActive);
 
   useEffect(() => {
-    document.body.classList.toggle("noscroll", isModalActive);
-    document
-      .getElementById("modal")
-      ?.classList.toggle("modalon", isModalActive);
-  }, [isModalActive]);
+    document.body.classList.toggle("noscroll", isModalOpen);
+    document.getElementById("modal")?.classList.toggle("modalon", isModalOpen);
+  }, [isModalOpen]);
 
   return <Network environment={environment} context={context} />;
 };

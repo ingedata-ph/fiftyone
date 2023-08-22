@@ -88,8 +88,14 @@ FiftyOne supports the configuration options described below:
 | `module_path`                 | `FIFTYONE_MODULE_PATH`              | `None`                        | A list of modules that should be automatically imported whenever FiftyOne is imported. |
 |                               |                                     |                               | See :ref:`this page <custom-embedded-documents>` for an example usage.                 |
 +-------------------------------+-------------------------------------+-------------------------------+----------------------------------------------------------------------------------------+
-| `plugins_dir`                 | `FIFTYONE_PLUGINS_DIR`              | `None`                        | A directory containing custom App plugins. See :ref:`this page <app-plugins>` for more |
-|                               |                                     |                               | information.                                                                           |
+| `operator_timeout`            | `FIFTYONE_OPERATOR_TIMEOUT`         | `600`                         | The timeout for execution of an operator. See :ref:`this page <fiftyone-plugins>` for  |
+|                               |                                     |                               | more information.                                                                      |
++-------------------------------+-------------------------------------+-------------------------------+----------------------------------------------------------------------------------------+
+| `plugins_dir`                 | `FIFTYONE_PLUGINS_DIR`              | `None`                        | A directory containing custom App plugins. See :ref:`this page <fiftyone-plugins>` for |
+|                               |                                     |                               | more information.                                                                      |
++-------------------------------+-------------------------------------+-------------------------------+----------------------------------------------------------------------------------------+
+| `plugins_cache_enabled`       | `FIFTYONE_PLUGINS_CACHE_ENABLED`    | `False`                       | When set to ``True`` plugins will be cached until their directory's ``mtime`` changes. |
+|                               |                                     |                               | This is intended to be used in production.                                             |
 +-------------------------------+-------------------------------------+-------------------------------+----------------------------------------------------------------------------------------+
 | `requirement_error_level`     | `FIFTYONE_REQUIREMENT_ERROR_LEVEL`  | `0`                           | A default error level to use when ensuring/installing requirements such as third-party |
 |                               |                                     |                               | packages. See :ref:`loading zoo models <model-zoo-load>` for an example usage.         |
@@ -148,7 +154,9 @@ and the CLI:
             "model_zoo_dir": "~/fiftyone/__models__",
             "model_zoo_manifest_paths": null,
             "module_path": null,
+            "operator_timeout": 600,
             "plugins_dir": null,
+            "plugins_cache_enabled": false,
             "requirement_error_level": 0,
             "show_progress_bars": true,
             "timezone": null
@@ -191,7 +199,9 @@ and the CLI:
             "model_zoo_dir": "~/fiftyone/__models__",
             "model_zoo_manifest_paths": null,
             "module_path": null,
+            "operator_timeout": 600,
             "plugins_dir": null,
+            "plugins_cache_enabled": false,
             "requirement_error_level": 0,
             "show_progress_bars": true,
             "timezone": null
@@ -327,12 +337,14 @@ You must also add `?authSource=admin` to your database URI:
 
     mongodb://[username:password@]host[:port]/?authSource=admin
 
+.. _using-a-different-mongodb-version:
+
 Using a different MongoDB version
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 FiftyOne is designed for **MongoDB v4.4 or later**.
 
-If you wish to connect FiftyOne to a MongoDB database whose version is no
+If you wish to connect FiftyOne to a MongoDB database whose version is not
 explicitly supported, you will also need to set the `database_validation`
 property of your FiftyOne config to `False` to suppress a runtime error that
 will otherwise occur.
@@ -638,6 +650,9 @@ The FiftyOne App can be configured in the ways described below:
 +---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
 | `notebook_height`         | `FIFTYONE_APP_NOTEBOOK_HEIGHT`         | `800`                       | The height of App instances displayed in notebook cells.                                  |
 +---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
+| `proxy_url`               | `FIFTYONE_APP_PROXY_URL`               | `None`                      | A URL string to override the default server URL. Useful for configuring the session       |
+|                           |                                        |                             | through a reverse proxy in notebook environments.                                         |
++---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
 | `show_confidence`         | `FIFTYONE_APP_SHOW_CONFIDENCE`         | `True`                      | Whether to show confidences when rendering labels in the App's expanded sample view.      |
 +---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
 | `show_index`              | `FIFTYONE_APP_SHOW_INDEX`              | `True`                      | Whether to show indexes when rendering labels in the App's expanded sample view.          |
@@ -649,8 +664,8 @@ The FiftyOne App can be configured in the ways described below:
 +---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
 | `show_tooltip`            | `FIFTYONE_APP_SHOW_TOOLTIP`            | `True`                      | Whether to show the tooltip when hovering over labels in the App's expanded sample view.  |
 +---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
-| `sidebar_mode`            | `FIFTYONE_APP_SIDEBAR_MODE`            | `best`                      | The default loading behavior of the App's sidebar. Supported values are                   |
-|                           |                                        |                             | `{"all", "best", "fast"}`. See :ref:`this section <app-sidebar-mode>` for more details.   |
+| `sidebar_mode`            | `FIFTYONE_APP_SIDEBAR_MODE`            | `fast`                      | The default loading behavior of the App's sidebar. Supported values are                   |
+|                           |                                        |                             | `{"fast", "all", "best"}`. See :ref:`this section <app-sidebar-mode>` for more details.   |
 +---------------------------+----------------------------------------+-----------------------------+-------------------------------------------------------------------------------------------+
 | `theme`                   | `FIFTYONE_APP_THEME`                   | `"browser"`                 | The default theme to use in the App. Supported values are `{"browser", "dark", "light"}`. |
 |                           |                                        |                             | If `"browser"`, your current theme will be persisted in your browser's storage.           |
@@ -705,12 +720,13 @@ You can print your App config at any time via the Python library and the CLI:
             "loop_videos": false,
             "multicolor_keypoints": false,
             "notebook_height": 800,
+            "proxy_url": None,
             "show_confidence": true,
             "show_index": true,
             "show_label": true,
             "show_skeletons": true,
             "show_tooltip": true,
-            "sidebar_mode": "best",
+            "sidebar_mode": "fast",
             "theme": "browser",
             "use_frame_number": false,
             "plugins": {}
@@ -752,12 +768,13 @@ You can print your App config at any time via the Python library and the CLI:
             "loop_videos": false,
             "multicolor_keypoints": false,
             "notebook_height": 800,
+            "proxy_url": None,
             "show_confidence": true,
             "show_index": true,
             "show_label": true,
             "show_skeletons": true,
             "show_tooltip": true,
-            "sidebar_mode": "best",
+            "sidebar_mode": "fast",
             "theme": "browser",
             "use_frame_number": false,
             "plugins": {}
@@ -781,7 +798,7 @@ describe these options in detail.
 
     Did you know? You can also configure the behavior of the App on a
     per-dataset basis by customizing your
-    :ref:`dataset's App config <custom-app-config>`.
+    :ref:`dataset's App config <dataset-app-config>`.
 
 Order of precedence
 ~~~~~~~~~~~~~~~~~~~
@@ -900,9 +917,9 @@ App config.
 
 Plugins that you can configure include:
 
--   The builtin :ref:`Map tab <app-map-tab>`
--   The builtin :ref:`3D visualizer <3d-visualizer-config>`
--   Any :ref:`custom plugins <app-plugins>` that you've registered
+-   The builtin :ref:`Map panel <app-map-panel>`
+-   The builtin :ref:`3D visualizer <app-3d-visualizer-config>`
+-   Any :ref:`custom plugins <fiftyone-plugins>` that you've registered
 
 For example, you may add the following to your JSON App config
 (`~/.fiftyone/app_config.json`) to register a Mapbox token globally on your
@@ -921,4 +938,4 @@ system:
 .. note::
 
     You can also store dataset-specific plugin settings by storing any subset
-    of the above values on a :ref:`dataset's App config <custom-app-config>`.
+    of the above values on a :ref:`dataset's App config <dataset-app-config>`.

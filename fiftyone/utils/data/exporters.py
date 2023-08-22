@@ -1,7 +1,7 @@
 """
 Dataset exporters.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -12,7 +12,6 @@ import os
 import warnings
 
 from bson import json_util
-import numpy as np
 
 import eta.core.datasets as etad
 import eta.core.image as etai
@@ -35,6 +34,7 @@ import fiftyone.utils.patches as foup
 from .parsers import (
     FiftyOneLabeledImageSampleParser,
     FiftyOneUnlabeledImageSampleParser,
+    FiftyOneUnlabeledMediaSampleParser,
     FiftyOneLabeledVideoSampleParser,
     FiftyOneUnlabeledVideoSampleParser,
     ImageSampleParser,
@@ -282,6 +282,11 @@ def export_samples(
             compute_metadata=True, export_media=_export_media, **clips_kwargs
         )
 
+    elif isinstance(dataset_exporter, UnlabeledMediaDatasetExporter):
+        sample_parser = FiftyOneUnlabeledMediaSampleParser(
+            compute_metadata=True
+        )
+
     elif isinstance(dataset_exporter, LabeledImageDatasetExporter):
         if found_patches:
             # Export labeled image patches
@@ -426,6 +431,14 @@ def write_dataset(
             num_samples=num_samples,
             sample_collection=sample_collection,
         )
+    elif isinstance(dataset_exporter, UnlabeledMediaDatasetExporter):
+        _write_unlabeled_dataset(
+            dataset_exporter,
+            samples,
+            sample_parser,
+            num_samples=num_samples,
+            sample_collection=sample_collection,
+        )
     else:
         raise ValueError(
             "Unsupported DatasetExporter %s" % type(dataset_exporter)
@@ -526,8 +539,10 @@ def _check_for_patches_export(samples, dataset_exporter, label_field, kwargs):
             export_types = list(label_cls.values())
         elif isinstance(label_cls, (list, tuple)):
             export_types = list(label_cls)
-        else:
+        elif label_cls is not None:
             export_types = [label_cls]
+        else:
+            export_types = None
 
         try:
             label_type = samples._get_label_field_type(label_field)
@@ -536,6 +551,7 @@ def _check_for_patches_export(samples, dataset_exporter, label_field, kwargs):
 
         if (
             label_type is not None
+            and export_types is not None
             and not issubclass(label_type, tuple(export_types))
             and fol.Classification in export_types
         ):
@@ -598,8 +614,10 @@ def _check_for_clips_export(samples, dataset_exporter, label_field, kwargs):
             export_types = list(label_cls.values())
         elif isinstance(label_cls, (list, tuple)):
             export_types = list(label_cls)
-        else:
+        elif label_cls is not None:
             export_types = [label_cls]
+        else:
+            export_types = None
 
         try:
             label_type = samples._get_label_field_type(label_field)
@@ -608,6 +626,7 @@ def _check_for_clips_export(samples, dataset_exporter, label_field, kwargs):
 
         if (
             label_type is not None
+            and export_types is not None
             and not issubclass(label_type, tuple(export_types))
             and fol.Classification in export_types
         ):
@@ -930,6 +949,40 @@ def _write_video_dataset(
                     dataset_exporter.export_sample(
                         video_path, metadata=metadata
                     )
+
+
+def _write_unlabeled_dataset(
+    dataset_exporter,
+    samples,
+    sample_parser,
+    num_samples=None,
+    sample_collection=None,
+):
+    with fou.ProgressBar(total=num_samples) as pb:
+        with dataset_exporter:
+            if sample_collection is not None:
+                dataset_exporter.log_collection(sample_collection)
+
+            for sample in pb(samples):
+                sample_parser.with_sample(sample)
+
+                # Parse media
+                filepath = sample_parser.get_media_path()
+
+                # Parse metadata
+                if dataset_exporter.requires_metadata:
+                    if sample_parser.has_metadata:
+                        metadata = sample_parser.get_metadata()
+                    else:
+                        metadata = None
+
+                    if metadata is None:
+                        metadata = fom.Metadata.build_for(filepath)
+                else:
+                    metadata = None
+
+                # Export sample
+                dataset_exporter.export_sample(filepath, metadata=metadata)
 
 
 class ExportPathsMixin(object):
@@ -1436,6 +1489,37 @@ class UnlabeledVideoDatasetExporter(DatasetExporter):
         raise NotImplementedError("subclass must implement export_sample()")
 
 
+class UnlabeledMediaDatasetExporter(DatasetExporter):
+    """Interface for exporting datasets of unlabeled samples.
+
+    See :ref:`this page <writing-a-custom-dataset-exporter>` for information
+    about implementing/using dataset exporters.
+
+    Args:
+        export_dir (None): the directory to write the export. This may be
+            optional for some exporters
+    """
+
+    @property
+    def requires_metadata(self):
+        """Whether this exporter requires
+        :class:`fiftyone.core.metadata.Metadata` instances for each sample
+        being exported.
+        """
+        raise NotImplementedError("subclass must implement requires_metadata")
+
+    def export_sample(self, filepath, metadata=None):
+        """Exports the given sample to the dataset.
+
+        Args:
+            filepath: a media path
+            metadata (None): a :class:`fiftyone.core.metadata.Metadata`
+                instance for the sample. Only required when
+                :meth:`requires_metadata` is ``True``
+        """
+        raise NotImplementedError("subclass must implement export_sample()")
+
+
 class LabeledImageDatasetExporter(DatasetExporter):
     """Interface for exporting datasets of labeled image samples.
 
@@ -1604,6 +1688,10 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
             necessary) via :func:`fiftyone.core.utils.normalize_path`
         abs_paths (False): whether to store absolute paths to the media in the
             exported labels
+        export_saved_views (True): whether to include saved views in the export.
+            Only applicable when exporting full datasets
+        export_runs (True): whether to include annotation/brain/evaluation
+            runs in the export. Only applicable when exporting full datasets
         pretty_print (False): whether to render the JSON in human readable
             format with newlines and indentations
     """
@@ -1614,6 +1702,8 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
         export_media=None,
         rel_dir=None,
         abs_paths=False,
+        export_saved_views=True,
+        export_runs=True,
         pretty_print=False,
     ):
         if export_media is None:
@@ -1624,6 +1714,8 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
         self.export_media = export_media
         self.rel_dir = rel_dir
         self.abs_paths = abs_paths
+        self.export_saved_views = export_saved_views
+        self.export_runs = export_runs
         self.pretty_print = pretty_print
 
         self._data_dir = None
@@ -1661,7 +1753,7 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
         self._media_exporter.setup()
 
     def log_collection(self, sample_collection):
-        self._metadata["name"] = sample_collection.name
+        self._metadata["name"] = sample_collection._dataset.name
         self._metadata["media_type"] = sample_collection.media_type
 
         schema = sample_collection._serialize_field_schema()
@@ -1679,6 +1771,12 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
 
         # Package extras into `info`, since the import API only supports
         # checking for `info`...
+
+        if sample_collection.tags:
+            info["tags"] = sample_collection.tags
+
+        if sample_collection.description:
+            info["description"] = sample_collection.description
 
         if sample_collection.classes:
             info["classes"] = sample_collection.classes
@@ -1709,30 +1807,38 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
 
         self._metadata["info"] = info
 
-        # Exporting runs only makes sense if the entire dataset is being
-        # exported, otherwise the view for the run cannot be reconstructed
-        # based on the information encoded in the run's document
-
         dataset = sample_collection._root_dataset
         if sample_collection != dataset:
             return
 
-        if dataset.has_annotation_runs:
-            d = dataset._doc.field_to_mongo("annotation_runs")
-            d = {k: json_util.dumps(v) for k, v in d.items()}
-            self._metadata["annotation_runs"] = d
+        # Exporting the information below only makes sense when exporting an
+        # entire dataset
+
+        if dataset.has_saved_views and self.export_saved_views:
+            self._metadata["saved_views"] = [
+                json_util.dumps(v.to_dict())
+                for v in dataset._doc.get_saved_views()
+            ]
+
+        if dataset.has_annotation_runs and self.export_runs:
+            self._metadata["annotation_runs"] = {
+                k: json_util.dumps(v.to_dict())
+                for k, v in dataset._doc.get_annotation_runs().items()
+            }
             _export_annotation_results(dataset, self._anno_dir)
 
-        if dataset.has_brain_runs:
-            d = dataset._doc.field_to_mongo("brain_methods")
-            d = {k: json_util.dumps(v) for k, v in d.items()}
-            self._metadata["brain_methods"] = d
+        if dataset.has_brain_runs and self.export_runs:
+            self._metadata["brain_methods"] = {
+                k: json_util.dumps(v.to_dict())
+                for k, v in dataset._doc.get_brain_methods().items()
+            }
             _export_brain_results(dataset, self._brain_dir)
 
-        if dataset.has_evaluations:
-            d = dataset._doc.field_to_mongo("evaluations")
-            d = {k: json_util.dumps(v) for k, v in d.items()}
-            self._metadata["evaluations"] = d
+        if dataset.has_evaluations and self.export_runs:
+            self._metadata["evaluations"] = {
+                k: json_util.dumps(v.to_dict())
+                for k, v in dataset._doc.get_evaluations().items()
+            }
             _export_evaluation_results(dataset, self._eval_dir)
 
     def export_sample(self, sample):
@@ -1781,17 +1887,15 @@ class LegacyFiftyOneDatasetExporter(GenericSampleDatasetExporter):
         return outpath
 
     def _export_media_fields(self, sd):
-        for field_name, label_type in self._media_fields.items():
+        for field_name, key in self._media_fields.items():
             value = sd.get(field_name, None)
             if value is None:
                 continue
 
-            if label_type is None:
+            if key is not None:
+                self._export_media_field(value, field_name, key=key)
+            else:
                 self._export_media_field(sd, field_name)
-            elif issubclass(label_type, fol.Segmentation):
-                self._export_media_field(value, field_name, key="mask_path")
-            elif issubclass(label_type, fol.Heatmap):
-                self._export_media_field(value, field_name, key="map_path")
 
     def _export_media_field(self, d, field_name, key=None):
         if key is not None:
@@ -1855,6 +1959,8 @@ class FiftyOneDatasetExporter(BatchDatasetExporter):
             allows for populating nested subdirectories that match the shape of
             the input paths. The path is converted to an absolute path (if
             necessary) via :func:`fiftyone.core.utils.normalize_path`
+        export_saved_views (True): whether to include saved views in the export.
+            Only applicable when exporting full datasets
         export_runs (True): whether to include annotation/brain/evaluation
             runs in the export. Only applicable when exporting full datasets
         use_dirs (False): whether to export metadata into directories of per
@@ -1868,6 +1974,7 @@ class FiftyOneDatasetExporter(BatchDatasetExporter):
         export_dir,
         export_media=None,
         rel_dir=None,
+        export_saved_views=True,
         export_runs=True,
         use_dirs=False,
         ordered=True,
@@ -1882,6 +1989,7 @@ class FiftyOneDatasetExporter(BatchDatasetExporter):
 
         self.export_media = export_media
         self.rel_dir = rel_dir
+        self.export_saved_views = export_saved_views
         self.export_runs = export_runs
         self.use_dirs = use_dirs
         self.ordered = ordered
@@ -2002,48 +2110,69 @@ class FiftyOneDatasetExporter(BatchDatasetExporter):
 
         dataset = sample_collection._dataset
         dataset_dict = dataset._doc.to_dict()
+        dataset_dict["saved_views"] = []
+        dataset_dict["annotation_runs"] = {}
+        dataset_dict["brain_methods"] = {}
+        dataset_dict["evaluations"] = {}
 
-        # Exporting runs only makes sense if the entire dataset is being
-        # exported, otherwise the view for the run cannot be reconstructed
-        # based on the information encoded in the run's document
+        #
+        # Exporting saved views/runs only makes sense if the entire dataset is
+        # being exported, otherwise the view for the run cannot be
+        # reconstructed based on the information encoded in the run's document
+        #
 
-        export_runs = (
+        _export_saved_views = (
+            self.export_saved_views
+            and sample_collection == sample_collection._root_dataset
+        )
+
+        _export_runs = (
             self.export_runs
             and sample_collection == sample_collection._root_dataset
         )
 
-        if not export_runs:
-            dataset_dict["annotation_runs"] = {}
-            dataset_dict["brain_methods"] = {}
-            dataset_dict["evaluations"] = {}
+        if _export_saved_views and dataset.has_saved_views:
+            dataset_dict["saved_views"] = [
+                v.to_dict() for v in dataset._doc.get_saved_views()
+            ]
+
+        if _export_runs and dataset.has_annotation_runs:
+            dataset_dict["annotation_runs"] = {
+                k: v.to_dict()
+                for k, v in dataset._doc.get_annotation_runs().items()
+            }
+            _export_annotation_results(dataset, self._anno_dir)
+
+        if _export_runs and dataset.has_brain_runs:
+            dataset_dict["brain_methods"] = {
+                k: v.to_dict()
+                for k, v in dataset._doc.get_brain_methods().items()
+            }
+            _export_brain_results(dataset, self._brain_dir)
+
+        if _export_runs and dataset.has_evaluations:
+            dataset_dict["evaluations"] = {
+                k: v.to_dict()
+                for k, v in dataset._doc.get_evaluations().items()
+            }
+            _export_evaluation_results(dataset, self._eval_dir)
 
         foo.export_document(dataset_dict, self._metadata_path)
-
-        if export_runs and sample_collection.has_annotation_runs:
-            _export_annotation_results(sample_collection, self._anno_dir)
-
-        if export_runs and sample_collection.has_brain_runs:
-            _export_brain_results(sample_collection, self._brain_dir)
-
-        if export_runs and sample_collection.has_evaluations:
-            _export_evaluation_results(sample_collection, self._eval_dir)
 
         self._media_exporter.close()
         for media_exporter in self._media_field_exporters.values():
             media_exporter.close()
 
     def _export_media_fields(self, sd):
-        for field_name, label_type in self._media_fields.items():
+        for field_name, key in self._media_fields.items():
             value = sd.get(field_name, None)
             if value is None:
                 continue
 
-            if label_type is None:
+            if key is not None:
+                self._export_media_field(value, field_name, key=key)
+            else:
                 self._export_media_field(sd, field_name)
-            elif issubclass(label_type, fol.Segmentation):
-                self._export_media_field(value, field_name, key="mask_path")
-            elif issubclass(label_type, fol.Heatmap):
-                self._export_media_field(value, field_name, key="map_path")
 
     def _export_media_field(self, d, field_name, key=None):
         if key is not None:
@@ -2226,6 +2355,66 @@ class VideoDirectoryExporter(UnlabeledVideoDatasetExporter):
 
     def export_sample(self, video_path, metadata=None):
         self._media_exporter.export(video_path)
+
+    def close(self, *args):
+        self._media_exporter.close()
+
+
+class MediaDirectoryExporter(UnlabeledMediaDatasetExporter):
+    """Exporter that writes a directory of media files of arbitrary type to
+    disk.
+
+    See :ref:`this page <MediaDirectory-export>` for format details.
+
+    The filenames of the input media files will be maintained in the export
+    directory, unless a name conflict would occur, in which case an index of
+    the form ``"-%d" % count`` is appended to the base filename.
+
+    Args:
+        export_dir: the directory to write the export
+        export_media (None): defines how to export the raw media contained
+            in the dataset. The supported values are:
+
+            -   ``True`` (default): copy all media files into the export
+                directory
+            -   ``"move"``: move media files into the export directory
+            -   ``"symlink"``: create symlinks to each media file in the export
+                directory
+        rel_dir (None): an optional relative directory to strip from each input
+            filepath to generate a unique identifier for each output file. This
+            identifier is joined with ``export_dir`` to generate an output path
+            for each exported media. This argument allows for populating nested
+            subdirectories that match the shape of the input paths. The path is
+            converted to an absolute path (if necessary) via
+            :func:`fiftyone.core.utils.normalize_path`
+    """
+
+    def __init__(self, export_dir, export_media=None, rel_dir=None):
+        if export_media is None:
+            export_media = True
+
+        super().__init__(export_dir=export_dir)
+
+        self.export_media = export_media
+        self.rel_dir = rel_dir
+
+        self._media_exporter = None
+
+    @property
+    def requires_metadata(self):
+        return False
+
+    def setup(self):
+        self._media_exporter = MediaExporter(
+            self.export_media,
+            export_path=self.export_dir,
+            rel_dir=self.rel_dir,
+            supported_modes=(True, "move", "symlink"),
+        )
+        self._media_exporter.setup()
+
+    def export_sample(self, filepath, metadata=None):
+        self._media_exporter.export(filepath)
 
     def close(self, *args):
         self._media_exporter.close()
@@ -2506,7 +2695,6 @@ class ImageClassificationDirectoryTreeExporter(LabeledImageDatasetExporter):
         if etau.is_str(image_or_path):
             image_path = fou.normalize_path(image_or_path)
         else:
-            img = image_or_path
             image_path = self._default_filename_patt % (
                 self._class_counts[_label]
             )

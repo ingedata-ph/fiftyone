@@ -83,21 +83,24 @@ const ViewBar = React.memo(() => {
       setView,
       fieldNames: fieldPaths,
     });
-  }, [view]);
+  }, [view, fieldPaths]);
 
   const { stages, activeStage } = state.context;
   const barRef = useRef(null);
 
   const handlers = {
-    VIEW_BAR_NEXT: useCallback(() => send("NEXT"), []),
-    VIEW_BAR_PREVIOUS: useCallback(() => send("PREVIOUS"), []),
-    VIEW_BAR_NEXT_STAGE: useCallback(() => send("NEXT_STAGE"), []),
-    VIEW_BAR_PREVIOUS_STAGE: useCallback(() => send("PREVIOUS_STAGE"), []),
-    VIEW_BAR_DELETE: useCallback(() => send("DELETE_ACTIVE_STAGE"), []),
-    VIEW_BAR_ENTER: useCallback((e) => {
-      e.preventDefault();
-      send("ENTER");
-    }, []),
+    VIEW_BAR_NEXT: useCallback(() => send("NEXT"), [send]),
+    VIEW_BAR_PREVIOUS: useCallback(() => send("PREVIOUS"), [send]),
+    VIEW_BAR_NEXT_STAGE: useCallback(() => send("NEXT_STAGE"), [send]),
+    VIEW_BAR_PREVIOUS_STAGE: useCallback(() => send("PREVIOUS_STAGE"), [send]),
+    VIEW_BAR_DELETE: useCallback(() => send("DELETE_ACTIVE_STAGE"), [send]),
+    VIEW_BAR_ENTER: useCallback(
+      (e) => {
+        e.preventDefault();
+        send("ENTER");
+      },
+      [send]
+    ),
   };
 
   const theme = useTheme();
@@ -168,6 +171,7 @@ const ViewBar = React.memo(() => {
       </ViewBarDiv>
       <IconsContainer>
         <Close
+          data-cy="btn-clear-view-bar"
           onClick={() => send("CLEAR")}
           style={{
             cursor: "pointer",
@@ -175,7 +179,7 @@ const ViewBar = React.memo(() => {
           }}
         />
         <ExternalLink
-          href="https://voxel51.com/docs/fiftyone/user_guide/app.html#using-the-view-bar"
+          href="https://docs.voxel51.com/user_guide/app.html#using-the-view-bar"
           style={{ display: "flex" }}
         >
           <Help style={{ color: theme.text.secondary }} />

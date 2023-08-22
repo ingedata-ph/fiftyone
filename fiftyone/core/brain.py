@@ -1,11 +1,12 @@
 """
 Brain method runs framework.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
 from fiftyone.core.runs import Run, RunConfig, RunInfo, RunResults
+from fiftyone.core.odm import patch_brain_runs
 
 
 class BrainInfo(RunInfo):
@@ -55,6 +56,10 @@ class BrainMethod(Run):
     @classmethod
     def _results_cache_field(cls):
         return "_brain_cache"
+
+    @classmethod
+    def _patch_function(cls):
+        return patch_brain_runs
 
 
 class BrainResults(RunResults):

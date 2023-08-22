@@ -1,16 +1,17 @@
 """
 FiftyOne Server /sort route
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
+from dataclasses import asdict
+
 from starlette.endpoints import HTTPEndpoint
 from starlette.requests import Request
 
-import fiftyone.core.dataset as fod
-import fiftyone.core.fields as fof
-import fiftyone.core.view as fov
+from fiftyone.core.json import stringify
+from fiftyone.core.utils import run_sync_task
 
 from fiftyone.server.decorators import route
 import fiftyone.server.events as fose
@@ -24,30 +25,33 @@ class Sort(HTTPEndpoint):
         dataset_name = data.get("dataset", None)
         filters = data.get("filters", {})
         stages = data.get("view", None)
-        extended = data.get("extended", None)
-        dist_field = data.get("dist_field", None)
+        subscription = data.get("subscription", None)
 
-        dataset = fod.load_dataset(dataset_name)
+        await run_sync_task(
+            lambda: fosv.get_view(
+                dataset_name,
+                stages=stages,
+                filters=filters,
+                extended_stages={
+                    "fiftyone.core.stages.SortBySimilarity": data["extended"]
+                },
+            )
+        )
 
-        changed = False
-        if dist_field and not dataset.get_field(dist_field):
-            dataset.add_sample_field(dist_field, fof.FloatField)
-            changed = True
+        state = fose.get_state()
+        state.selected = []
+        state.selected_labels = []
 
-        fosv.get_view(dataset_name, stages, filters, extended_stages=None)
+        await fose.dispatch_event(subscription, fose.StateUpdate(state))
 
-        state = fose.get_state().copy()
-        view = fosv.get_view(dataset_name, stages, filters)
-        state.dataset = view._dataset
+        dataset = stringify(
+            asdict(
+                await serialize_dataset(
+                    dataset_name=dataset_name,
+                    serialized_view=stages,
+                )
+            )
+        )
 
-        if isinstance(view, fov.DatasetView):
-            state.view = view
-        else:
-            view = None
-
-        return {
-            "dataset": await serialize_dataset(dataset_name, stages)
-            if changed
-            else None,
-            "state": state.serialize(),
-        }
+        dataset["stages"] = None
+        return {"dataset": dataset}

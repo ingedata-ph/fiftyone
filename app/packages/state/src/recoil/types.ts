@@ -1,3 +1,4 @@
+import { SpaceNodeJSON } from "@fiftyone/spaces";
 import { StrictField } from "@fiftyone/utilities";
 
 export namespace State {
@@ -8,9 +9,15 @@ export namespace State {
     SAMPLE = "SAMPLE",
   }
 
+  /**
+   * An object containing the configuration for plugins.
+   * Each key is the name of a plugin, and the value is the
+   * configuration for that plugin.
+   */
   export type PluginConfig = { [pluginName: string]: object };
   export interface Config {
     colorPool: string[];
+    customizedColors: CustomizeColor[];
     colorscale: string;
     gridZoom: number;
     loopVideos: boolean;
@@ -39,6 +46,19 @@ export namespace State {
     [key: number]: string;
   }
 
+  export interface SavedView {
+    id: string;
+    datasetId: string;
+    name: string;
+    description?: string;
+    color?: string;
+    slug: string;
+    viewStages: Stage[];
+    createdAt: DateTime;
+    lastLoadedAt: DateTime;
+    lastModifiedAt?: DateTime;
+  }
+
   export interface Evaluation {}
 
   export interface Run {
@@ -54,6 +74,11 @@ export namespace State {
       embeddingsField: string | null;
       method: string;
       patchesField: string | null;
+      cls: string;
+      supportsPrompts: boolean | null;
+      type: string | null;
+      maxK: number | null;
+      supportsLeastSimilarity: boolean | null;
     };
   }
 
@@ -83,6 +108,11 @@ export namespace State {
     paths: string[];
   }
 
+  export interface DynamicGroupParameters {
+    groupBy: string;
+    orderBy?: string;
+  }
+
   export interface DatasetAppConfig {
     gridMediaField?: string;
     modalMediaField?: string;
@@ -90,13 +120,20 @@ export namespace State {
     plugins?: PluginConfig;
     sidebarGroups?: SidebarGroup[];
     sidebarMode?: "all" | "best" | "fast";
+    colorScheme?: ColorScheme;
   }
+
+  /**
+   * The dataset object returned by the API.
+   */
   export interface Dataset {
+    stages?: Stage[];
     id: string;
     brainMethods: BrainRun[];
     createdAt: DateTime;
     defaultMaskTargets: Targets;
     evaluations: EvaluationRun[];
+    savedViews: SavedView[];
     frameFields: StrictField[];
     lastLoadedAt: DateTime;
     maskTargets: {
@@ -104,39 +141,49 @@ export namespace State {
     };
     groupSlice?: string;
     mediaType: MediaType;
+    parentMediaType: MediaType;
     name: string;
     sampleFields: StrictField[];
     version: string;
     skeletons: StrictKeypointSkeleton[];
-    defaultSkeleton: KeypointSkeleton;
+    defaultSkeleton?: KeypointSkeleton;
     groupMediaTypes?: {
       name: string;
       mediaType: MediaType;
     }[];
-    defaultGroupSlice: string;
+    defaultGroupSlice?: string;
     groupField: string;
     appConfig: DatasetAppConfig;
     info: { [key: string]: string };
+    viewCls: null;
+    viewFields: StrictField[]; // sample && frame fields in the current view
   }
 
-  export interface Filter {}
-
-  export enum TagKey {
-    SAMPLE = "sample",
-    LABEL = "label",
+  /**
+   * @hidden
+   */
+  export interface CategoricalFilter<T> {
+    values: T[];
+    isMatching: boolean;
+    exclude: boolean;
   }
+
+  /**
+   * @hidden
+   */
+  type Filter = CategoricalFilter<string>;
 
   export interface SortBySimilarityParameters {
     brainKey: string;
     distField?: string;
     k?: number;
     reverse?: boolean;
+    query?: string | string[];
+    queryIds?: string[];
   }
 
   export interface Filters {
-    tags?: {
-      [key in TagKey]?: string[];
-    };
+    _label_tags?: CategoricalFilter<string>;
     [key: string]: Filter;
   }
 
@@ -165,5 +212,29 @@ export namespace State {
     selectedLabels: SelectedLabel[];
     view: Stage[];
     viewCls: string | null;
+    viewName: string | null;
+    savedViewSlug: string | null;
+    savedViews: SavedView[];
+    spaces?: SpaceNodeJSON;
+    colorScheme?: ColorScheme;
   }
+}
+
+export interface CustomizeColor {
+  path: string;
+  fieldColor?: string;
+  colorByAttribute?: string; // must be string field, int field, or boolean field
+  valueColors?: {
+    value: string;
+    color: string;
+  }[];
+}
+
+export interface ColorScheme {
+  colorPool: string[];
+  fields: CustomizeColor[];
+}
+
+export interface ColorSchemeSetting extends ColorScheme {
+  saveToApp?: boolean;
 }

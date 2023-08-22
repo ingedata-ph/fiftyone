@@ -178,15 +178,13 @@ export default class MenuBuilder {
         {
           label: "Documentation",
           click() {
-            shell.openExternal("https://voxel51.com/docs/fiftyone");
+            shell.openExternal("https://docs.voxel51.com");
           },
         },
         {
           label: "Slack",
           click() {
-            shell.openExternal(
-              "https://join.slack.com/t/fiftyone-users/shared_invite/zt-gtpmm76o-9AjvzNPBOzevBySKzt02gg"
-            );
+            shell.openExternal("https://slack.voxel51.com");
           },
         },
       ],
@@ -284,15 +282,13 @@ export default class MenuBuilder {
           {
             label: "Documentation",
             click() {
-              shell.openExternal("https://voxel51.com/docs/fiftyone");
+              shell.openExternal("https://docs.voxel51.com");
             },
           },
           {
             label: "Slack",
             click() {
-              shell.openExternal(
-                "https://join.slack.com/t/fiftyone-users/shared_invite/zt-gtpmm76o-9AjvzNPBOzevBySKzt02gg"
-              );
+              shell.openExternal("https://slack.voxel51.com");
             },
           },
         ],

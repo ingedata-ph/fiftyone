@@ -1,15 +1,14 @@
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import React, {
-  useEffect,
+  Suspense,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { useCallback } from "react";
-import { Suspense } from "react";
 import Input from "react-input-autosize";
-import { useLayer } from "react-laag";
+import { UseLayerOptions, useLayer } from "react-laag";
 import LoadingDots from "../Loading/LoadingDots";
 
 import Results from "../Results/Results";
@@ -20,6 +19,16 @@ interface UseSearch<T extends unknown> {
   (search: string): { values: T[]; total?: number };
 }
 
+type Props<T> = {
+  active?: number;
+  search: string;
+  useSearch: UseSearch<T>;
+  onSelect: (value: T) => void;
+  onResults: (results: T[]) => void;
+  component: React.FC<{ value: T; className: string }>;
+  toKey?: (value: T) => string;
+};
+
 const SelectorResults = <T extends unknown>({
   active,
   onSelect,
@@ -28,15 +37,7 @@ const SelectorResults = <T extends unknown>({
   onResults,
   component,
   toKey = (value) => String(value),
-}: {
-  active?: number;
-  search: string;
-  useSearch: UseSearch<T>;
-  onSelect: (value: T) => void;
-  onResults: (results: T[]) => void;
-  component: React.FC<{ value: T; className: string }>;
-  toKey?: (value: T) => string;
-}) => {
+}: Props<T>) => {
   const { values, total } = useSearch(search);
 
   useLayoutEffect(() => {
@@ -56,6 +57,7 @@ const SelectorResults = <T extends unknown>({
 };
 
 export interface SelectorProps<T> {
+  id?: string;
   value?: string;
   onSelect: (value: T) => void;
   placeholder: string;
@@ -65,27 +67,35 @@ export interface SelectorProps<T> {
   inputClassName?: string;
   inputStyle?: React.CSSProperties;
   containerStyle?: React.CSSProperties;
+  resultsPlacement?: UseLayerOptions["placement"];
   overflow?: boolean;
   onMouseEnter?: React.MouseEventHandler;
 }
 
-const Selector = <T extends unknown>({
-  value,
-  onSelect,
-  placeholder,
-  useSearch,
-  component,
-  toKey = (value) => String(value),
-  inputStyle,
-  inputClassName,
-  containerStyle,
-  overflow = false,
-  onMouseEnter,
-}: SelectorProps<T>) => {
+const Selector = <T extends unknown>(props: SelectorProps<T>) => {
+  const {
+    id,
+    value,
+    onSelect,
+    placeholder,
+    useSearch,
+    component,
+    toKey = (value) => String(value),
+    inputStyle,
+    inputClassName,
+    containerStyle,
+    resultsPlacement,
+    overflow = false,
+    onMouseEnter,
+    ...otherProps
+  } = props;
+
   const [editing, setEditing] = useState(false);
   const [search, setSearch] = useState("");
   const valuesRef = useRef<T[]>([]);
   const [active, setActive] = useState<number>();
+  const ref = useRef<HTMLInputElement | null>(null);
+  const hovering = useRef(false);
 
   const onSelectWrapper = useMemo(() => {
     return (value: T) => {
@@ -93,9 +103,6 @@ const Selector = <T extends unknown>({
       setEditing(false);
     };
   }, [onSelect]);
-
-  const ref = useRef<HTMLInputElement | null>();
-  const hovering = useRef(false);
 
   useLayoutEffect(() => {
     if (!editing) {
@@ -113,16 +120,19 @@ const Selector = <T extends unknown>({
 
   const { renderLayer, triggerProps, layerProps, triggerBounds } = useLayer({
     isOpen: editing,
-    overflowContainer: false,
+    overflowContainer: true,
     auto: true,
     snap: true,
-    placement: "bottom-center",
-    possiblePlacements: ["bottom-center"],
+    placement: resultsPlacement ? resultsPlacement : "bottom-center",
+    possiblePlacements: resultsPlacement
+      ? [resultsPlacement]
+      : ["bottom-center"],
     triggerOffset: 8,
   });
 
   return (
     <div
+      {...otherProps}
       onMouseEnter={() => {
         hovering.current = true;
       }}
@@ -144,6 +154,7 @@ const Selector = <T extends unknown>({
         className={style.input}
         value={editing ? search : value || ""}
         placeholder={placeholder}
+        data-cy={`selector-${placeholder}`}
         onFocus={() => setEditing(true)}
         onBlur={(e) => {
           if (!editing) return;
@@ -190,6 +201,7 @@ const Selector = <T extends unknown>({
           <AnimatePresence>
             <motion.div
               className={style.resultsContainer}
+              id={id}
               initial={{ opacity: 0, height: 0 }}
               animate={{
                 opacity: 1,

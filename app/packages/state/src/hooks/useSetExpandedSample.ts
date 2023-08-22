@@ -1,27 +1,59 @@
-import { useRecoilTransaction_UNSTABLE, useRecoilValue } from "recoil";
-import { groupField, groupSlice, isGroup } from "../recoil";
+import {
+  useRecoilCallback,
+  useRecoilTransaction_UNSTABLE,
+  useRecoilValue,
+} from "recoil";
+import {
+  currentModalNavigation,
+  currentModalSample,
+  dynamicGroupCurrentElementIndex,
+} from "../recoil";
+import * as groupAtoms from "../recoil/groups";
 
-import * as atoms from "../recoil/atoms";
+export default () => {
+  const types = useRecoilValue(groupAtoms.groupMediaTypes);
+  const map = useRecoilValue(groupAtoms.groupMediaTypesMap);
 
-export default (withGroup: boolean = true) => {
-  const field = useRecoilValue(groupField);
-  const group = useRecoilValue(isGroup);
-  return useRecoilTransaction_UNSTABLE(
-    ({ set }) =>
-      (sample: atoms.SampleData, navigation?: atoms.ModalNavigation) => {
-        set(atoms.modal, (current) => {
-          return {
-            ...sample,
-            navigation: navigation ? navigation : current.navigation,
-          };
-        });
+  const setter = useRecoilTransaction_UNSTABLE(
+    ({ get, reset, set }) =>
+      (
+        id: string,
+        index: number,
+        groupId?: string,
+        groupByFieldValue?: string
+      ) => {
+        set(groupAtoms.groupId, groupId || null);
+        set(currentModalSample, { id, index });
+        reset(groupAtoms.nestedGroupIndex);
+        reset(dynamicGroupCurrentElementIndex);
+        groupByFieldValue &&
+          set(groupAtoms.groupByFieldValue, groupByFieldValue);
 
-        group &&
-          withGroup &&
-          field &&
-          sample.sample[field]?.name &&
-          set(groupSlice(true), sample.sample[field]?.name);
+        let fallback = get(groupAtoms.groupSlice(false));
+        if (map[fallback] === "point_cloud") {
+          fallback = types
+            .filter(({ mediaType }) => mediaType !== "point_cloud")
+            .map(({ name }) => name)
+            .sort()[0];
+        }
+        set(groupAtoms.groupSlice(true), fallback);
       },
-    [group, field, withGroup]
+    [map, types]
+  );
+
+  return useRecoilCallback(
+    ({ snapshot }) =>
+      async (index: number | ((current: number) => number)) => {
+        const current = await snapshot.getPromise(currentModalSample);
+        if (index instanceof Function) {
+          index = index(current.index);
+        }
+        const { id, groupId, groupByFieldValue } = await (
+          await snapshot.getPromise(currentModalNavigation)
+        )(index);
+
+        setter(id, index, groupId, groupByFieldValue);
+      },
+    [setter]
   );
 };

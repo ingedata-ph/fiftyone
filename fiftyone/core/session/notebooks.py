@@ -1,12 +1,13 @@
 """
 Session notebook handling.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
 from dataclasses import dataclass
 import os
+import typing as t
 
 from jinja2 import Template
 
@@ -46,7 +47,10 @@ def capture(cell: NotebookCell, data: fose.CaptureNotebookCell) -> None:
 
 
 def display(
-    client: Client, cell: NotebookCell, reactivate: bool = False
+    client: Client,
+    cell: NotebookCell,
+    proxy_url: str = None,
+    reactivate: bool = False,
 ) -> None:
     """Displays a running FiftyOne instance."""
     funcs = {
@@ -55,18 +59,25 @@ def display(
         focx._DATABRICKS: display_databricks,
     }
     fn = funcs[focx._get_context()]
-    fn(client, cell, reactivate)
+    fn(client, cell, proxy_url=proxy_url, reactivate=reactivate)
 
 
 def display_ipython(
-    client: Client, cell: NotebookCell, reactivate: bool = False
+    client: Client,
+    cell: NotebookCell,
+    proxy_url: str = None,
+    reactivate: bool = False,
+    **kwargs: t.Dict[str, t.Union[str, bool]],
 ) -> None:
     iframe = IPython.display.IFrame(
-        f"""{focx.get_url(
+        focx.get_url(
             cell.address,
-            os.environ.get("FIFTYONE_APP_CLIENT_PORT", cell.port),
+            cell.port,
+            notebook=True,
+            proxy_url=proxy_url,
             subscription=cell.subscription,
-        )}""",
+            **kwargs,
+        ),
         height=cell.height,
         width="100%",
     )
@@ -77,7 +88,10 @@ def display_ipython(
 
 
 def display_colab(
-    client: Client, cell: NotebookCell, reactivate: bool = False
+    client: Client,
+    cell: NotebookCell,
+    proxy_url: str = None,
+    reactivate: bool = False,
 ) -> None:
     """Display a FiftyOne instance in a Colab output frame.
 
@@ -124,4 +138,24 @@ def display_colab(
     output.register_callback(
         f"fiftyone.deactivate.{cell.subscription.replace('-', '_')}",
         lambda: client.send_event(fose.DeactivateNotebookCell()),
+    )
+
+
+def display_databricks(
+    client: Client,
+    cell: NotebookCell,
+    proxy_url: str = None,
+    reactivate: bool = False,
+):
+    """Display a FiftyOne instance in a Databricks output frame.
+
+    The Databricks driver port is accessible via a proxy url and can be
+    displayed inside an IFrame.
+    """
+    display_ipython(
+        client,
+        cell,
+        polling=True,
+        proxy_url=proxy_url,
+        reactivate=reactivate,
     )

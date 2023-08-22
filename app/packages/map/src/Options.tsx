@@ -13,6 +13,7 @@ import {
 } from "./state";
 import useEventHandler from "./useEventHandler";
 import { useExternalLink } from "@fiftyone/utilities";
+import { OperatorPlacements, types } from "@fiftyone/operators";
 
 const useSearch = (search: string) => {
   const values = STYLES.filter((style) => style.includes(search));
@@ -33,7 +34,7 @@ const Options: React.FC<{
   const [style, setStyle] = useRecoilState(mapStyle);
   const fields = useRecoilValue(geoFields);
   const [field, setActiveField] = useRecoilState(activeField);
-  const [selection, setSelection] = useRecoilState(hasSelection);
+  const hasMapSelection = useRecoilValue(hasSelection);
 
   const selectorStyle = {
     background: theme.neutral.softBg,
@@ -43,9 +44,8 @@ const Options: React.FC<{
   };
   const reset = React.useCallback(() => {
     clearSelectionData();
-    setSelection(false);
     fitData();
-  }, [clearSelectionData, fitData, setSelection]);
+  }, [clearSelectionData, fitData]);
 
   useEventHandler(window, "keydown", ({ key }: KeyboardEvent) => {
     switch (key) {
@@ -86,7 +86,7 @@ const Options: React.FC<{
       </div>
 
       <div>
-        {selection && (
+        {hasMapSelection && (
           <Link to={reset} className={link} title={"Reset (Esc)"}>
             <Close />
           </Link>
@@ -98,13 +98,14 @@ const Options: React.FC<{
 
         <Link
           className={link}
-          href={"https://voxel51.com/docs/fiftyone/user_guide/app.html#map-tab"}
+          href={"https://docs.voxel51.com/user_guide/app.html#map-panel"}
           title={"Help"}
           to={useExternalLink("https://docs.voxel51.com")}
           target={"_blank"}
         >
           <Help />
         </Link>
+        <OperatorPlacements place={types.Places.MAP_ACTIONS} />
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 """
 FiftyOne's public interface.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -25,6 +25,7 @@ from .core.aggregations import (
     Mean,
     Quantiles,
     Schema,
+    ListSchema,
     Std,
     Sum,
     Values,
@@ -53,6 +54,7 @@ from .core.fields import (
     ArrayField,
     BooleanField,
     ClassesField,
+    ColorField,
     DateField,
     DateTimeField,
     DictField,
@@ -69,13 +71,13 @@ from .core.fields import (
     GeoMultiLineStringField,
     GeoMultiPolygonField,
     IntField,
-    IntDictField,
     KeypointsField,
     ListField,
     ObjectIdField,
     PolylinePointsField,
+    ReferenceField,
     StringField,
-    TargetsField,
+    MaskTargetsField,
     VectorField,
 )
 from .core.frame import Frame
@@ -125,7 +127,10 @@ from .core.models import (
     ModelManager,
 )
 from .core.odm import (
+    ColorScheme,
     DatasetAppConfig,
+    DynamicEmbeddedDocument,
+    EmbeddedDocument,
     KeypointSkeleton,
     SidebarGroupDocument,
 )
@@ -146,22 +151,28 @@ from .core.plots import (
     NumericalHistogram,
 )
 from .core.sample import Sample
+from .core.spaces import (
+    Space,
+    Panel,
+)
 from .core.stages import (
     Concat,
     Exclude,
     ExcludeBy,
     ExcludeFields,
     ExcludeFrames,
+    ExcludeGroups,
     ExcludeLabels,
     Exists,
     FilterField,
     FilterLabels,
     FilterKeypoints,
-    Limit,
-    LimitLabels,
+    Flatten,
     GeoNear,
     GeoWithin,
     GroupBy,
+    Limit,
+    LimitLabels,
     MapLabels,
     Match,
     MatchFrames,
@@ -184,6 +195,7 @@ from .core.stages import (
     ToPatches,
     ToEvaluationPatches,
     ToClips,
+    ToTrajectories,
     ToFrames,
 )
 from .core.session import (
@@ -192,6 +204,7 @@ from .core.session import (
     Session,
 )
 from .core.utils import (
+    disable_progress_bars,
     pprint,
     pformat,
     ProgressBar,

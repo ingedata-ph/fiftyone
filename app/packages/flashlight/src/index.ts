@@ -1,24 +1,21 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 import { MARGIN, NUM_ROWS_PER_SECTION } from "./constants";
 import SectionElement from "./section";
 import {
   Get,
   ItemData,
+  ItemIndexMap,
   OnItemClick,
-  OnResize,
   OnItemResize,
+  OnResize,
   Optional,
   Options,
   Render,
   RowData,
   State,
-  ItemIndexMap,
 } from "./state";
-export type { Render, Response } from "./state";
-import { createScrollReader } from "./zooming";
-
 import {
   flashlight,
   flashlightContainer,
@@ -26,29 +23,39 @@ import {
 } from "./styles.module.css";
 import tile from "./tile";
 import { argMin, getDims } from "./util";
+import { createScrollReader } from "./zooming";
+export type { Render, Response } from "./state";
 
-export interface FlashlightOptions extends Optional<Options> {}
+export type FlashlightOptions = Optional<Options>;
 
 export interface FlashlightConfig<K> {
   get: Get<K>;
   render: Render;
+  showPixels?: boolean;
   initialRequestKey: K;
   horizontal: boolean;
   options: FlashlightOptions;
+  elementId?: string;
+  containerId?: string;
+  enableHorizontalKeyNavigation?: {
+    navigationCallback: (isPrev: boolean) => Promise<void>;
+    previousKey: string;
+    nextKey: string;
+  };
   onItemClick?: OnItemClick;
   onResize?: OnResize;
   onItemResize?: OnItemResize;
 }
 
 export default class Flashlight<K> {
-  private loading: boolean = false;
-  private container: HTMLDivElement;
-  private element: HTMLDivElement;
-  private state: State<K>;
+  public container: HTMLDivElement;
+  public element: HTMLDivElement;
+  public state: State<K>;
+
+  private loading = false;
   private resizeObserver: ResizeObserver;
   private readonly config: FlashlightConfig<K>;
-  private pixelsSet: boolean;
-  private ctx: number = 0;
+  private ctx = 0;
   private resizeTimeout: ReturnType<typeof setTimeout>;
 
   constructor(config: FlashlightConfig<K>) {
@@ -56,10 +63,31 @@ export default class Flashlight<K> {
     this.container = this.createContainer();
     this.showPixels();
     this.element = document.createElement("div");
+    config.elementId && this.element.setAttribute("id", config.elementId);
     this.element.classList.add(flashlight);
+    this.element.setAttribute("data-cy", "flashlight");
     this.state = this.getEmptyState(config);
 
     document.addEventListener("visibilitychange", () => this.render());
+
+    if (config.enableHorizontalKeyNavigation && config.horizontal) {
+      const keyDownEventListener = (e) => {
+        if (!this.isAttached()) {
+          document.removeEventListener("keydown", keyDownEventListener);
+          return;
+        }
+
+        if (e.key === config.enableHorizontalKeyNavigation.previousKey) {
+          e.preventDefault();
+          config.enableHorizontalKeyNavigation.navigationCallback(true);
+        } else if (e.key === config.enableHorizontalKeyNavigation.nextKey) {
+          e.preventDefault();
+          config.enableHorizontalKeyNavigation.navigationCallback(false);
+        }
+      };
+
+      document.addEventListener("keydown", keyDownEventListener);
+    }
 
     this.resizeObserver = new ResizeObserver(
       ([
@@ -131,6 +159,11 @@ export default class Flashlight<K> {
     this.state = this.getEmptyState(this.config);
 
     this.showPixels();
+    this.element.dispatchEvent(
+      new CustomEvent("flashlight-refreshing", {
+        bubbles: true,
+      })
+    );
 
     const { width, height } = getDims(
       this.config.horizontal,
@@ -146,7 +179,7 @@ export default class Flashlight<K> {
     return Boolean(this.element.parentElement);
   }
   private showPixels() {
-    this.container.classList.add(flashlightPixels);
+    this.config.showPixels && this.container.classList.add(flashlightPixels);
   }
 
   private hidePixels() {
@@ -160,9 +193,6 @@ export default class Flashlight<K> {
 
     const { width, height } = getDims(this.config.horizontal, element);
 
-    if (width === 0) {
-      return;
-    }
     this.state.width = width - 16;
     this.state.containerHeight = height;
 
@@ -306,7 +336,7 @@ export default class Flashlight<K> {
     }
 
     this.loading = true;
-    let ctx = this.ctx;
+    const ctx = this.ctx;
     return this.state
       .get(this.state.currentRequestKey, this.state.selectedMediaFieldName)
       .then(({ items, nextRequestKey }) => {
@@ -436,7 +466,7 @@ export default class Flashlight<K> {
     });
   }
 
-  private render(zooming: boolean = false) {
+  private render(zooming = false) {
     if (
       this.state.sections.length === 0 &&
       this.state.currentRequestKey === null
@@ -570,6 +600,9 @@ export default class Flashlight<K> {
   private createContainer(): HTMLDivElement {
     const container = document.createElement("div");
     container.classList.add(flashlightContainer);
+    if (this.config.containerId) {
+      container.setAttribute("id", this.config.containerId);
+    }
     return container;
   }
 

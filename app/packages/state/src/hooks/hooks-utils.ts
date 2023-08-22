@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
-import ResizeObserver from "resize-observer-polyfill";
 import { toCamelCase } from "@fiftyone/utilities";
+import ResizeObserver from "resize-observer-polyfill";
 
 import { State, StateResolver, transformDataset, useStateUpdate } from "../";
 
+interface EventTarget {
+  addEventListener: HTMLElement["addEventListener"];
+  removeEventListener: HTMLElement["removeEventListener"];
+}
+
 export const useEventHandler = (
-  target,
-  eventType,
-  handler,
+  target: EventTarget,
+  eventType: string,
+  handler: React.EventHandler<any>,
   useCapture = false
 ) => {
   // Adapted from https://reactjs.org/docs/hooks-faq.html#what-can-i-do-if-my-effect-dependencies-change-too-often
@@ -24,7 +29,7 @@ export const useEventHandler = (
     return () => {
       target && target.removeEventListener(eventType, wrapper);
     };
-  }, [target, eventType]);
+  }, [target, eventType, useCapture]);
 };
 
 export const useObserve = (target, handler) => {
@@ -53,17 +58,20 @@ export const useScrollHandler = (handler) =>
 export const useHashChangeHandler = (handler) =>
   useEventHandler(window, "hashchange", handler);
 
-export const useKeydownHandler = (handler) =>
+export const useKeydownHandler = (handler: React.KeyboardEventHandler) =>
   useEventHandler(document.body, "keydown", handler);
 
-export const useOutsideClick = (ref, handler) => {
+export const useOutsideClick = (
+  ref: React.MutableRefObject<HTMLElement | null>,
+  handler: React.MouseEventHandler
+) => {
   const handleOutsideClick = useCallback(
     (event) => {
       if (ref.current && !ref.current.contains(event.target)) {
         handler(event);
       }
     },
-    [handler]
+    [handler, ref]
   );
 
   useEventHandler(document, "mousedown", handleOutsideClick, true);
@@ -118,8 +126,8 @@ export const useWindowSize = () => {
   return windowSize;
 };
 
-export const useUnprocessedStateUpdate = () => {
-  const update = useStateUpdate();
+export const useUnprocessedStateUpdate = (ignoreSpaces = false) => {
+  const update = useStateUpdate(ignoreSpaces);
   return (resolve: StateResolver) => {
     update((t) => {
       const { colorscale, config, dataset, state } =
@@ -131,10 +139,12 @@ export const useUnprocessedStateUpdate = () => {
           ? (transformDataset(toCamelCase(dataset)) as State.Dataset)
           : null,
         config: config ? (toCamelCase(config) as State.Config) : undefined,
-        state: {
-          ...toCamelCase(state),
-          view: state.view,
-        } as State.Description,
+        state: state
+          ? ({
+              ...toCamelCase(state),
+              view: state.view,
+            } as State.Description)
+          : null,
       };
     });
   };

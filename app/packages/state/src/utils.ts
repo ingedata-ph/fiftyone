@@ -1,15 +1,24 @@
 import { clone, Field, Schema, StrictField } from "@fiftyone/utilities";
-import { MutableRefObject } from "react";
+import { useCallback, useRef } from "react";
 import { State } from "./recoil";
 
 import { matchPath, RoutingContext } from "./routing";
 
-export const deferrer =
-  (initialized: MutableRefObject<boolean>) =>
-  (fn: (...args: any[]) => void) =>
-  (...args: any[]): void => {
-    if (initialized.current) fn(...args);
-  };
+export const useDeferrer = () => {
+  const initialized = useRef(false);
+  const deferred = useCallback(
+    (fn: () => void) => {
+      if (initialized.current) fn();
+    },
+    [initialized]
+  );
+
+  const init = useCallback(() => {
+    initialized.current = true;
+  }, []);
+
+  return { init, deferred };
+};
 
 export const stringifyObj = (obj) => {
   if (typeof obj !== "object" || Array.isArray(obj)) return obj;
@@ -66,12 +75,23 @@ export const collapseFields = (paths): StrictField[] => {
   return Object.entries(schema).map(([_, field]) => toStrictField(field));
 };
 
-const convertTargets = (targets: { target: any; value: any }[]) => {
+const convertTargets = (
+  targets: {
+    target: string;
+    value: string;
+  }[]
+) => {
   return Object.fromEntries(
-    (targets || []).map<[number, string]>(({ target, value }) => [
-      target,
-      value,
-    ])
+    (targets || []).map(({ target, value }, i) => {
+      if (!isNaN(Number(target))) {
+        // masks targets is for non-rgb masks
+        return [target, value];
+      }
+
+      // convert into RGB mask representation
+      // offset of 1 in intTarget because 0 has a special significance
+      return [target, { label: value, intTarget: i + 1 }];
+    })
   );
 };
 
@@ -102,11 +122,12 @@ export const getDatasetName = (context: RoutingContext<any>): string => {
       path: "/datasets/:name",
       exact: true,
     },
-    {}
+    {},
+    ""
   );
 
   if (result) {
-    return result.variables.name;
+    return decodeURIComponent(result.variables.name);
   }
 
   return null;
@@ -114,3 +135,36 @@ export const getDatasetName = (context: RoutingContext<any>): string => {
 
 export type ResponseFrom<TQuery extends { response: unknown }> =
   TQuery["response"];
+
+export const getSavedViewName = (context: RoutingContext<any>): string => {
+  const datasetName = getDatasetName(context);
+  const queryString = datasetName
+    ? context.history.location.search
+    : window.location.search;
+  const params = new URLSearchParams(queryString);
+  const viewName = params.get("view");
+  if (viewName) {
+    return decodeURIComponent(viewName);
+  }
+
+  return null;
+};
+
+export const DEFAULT_APP_COLOR_SCHEME = {
+  colorPool: [
+    "#ee0000",
+    "#ee6600",
+    "#993300",
+    "#996633",
+    "#999900",
+    "#009900",
+    "#003300",
+    "#009999",
+    "#000099",
+    "#0066ff",
+    "#6600ff",
+    "#cc33cc",
+    "#777799",
+  ],
+  fields: [],
+};

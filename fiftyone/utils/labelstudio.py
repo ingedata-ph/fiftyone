@@ -2,7 +2,7 @@
 Utilities for working with annotations in
 `Label Studio <https://labelstud.io>`_.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -19,7 +19,6 @@ import webbrowser
 from bson import ObjectId
 import numpy as np
 
-import fiftyone as fo
 import fiftyone.core.labels as fol
 import fiftyone.core.media as fom
 import fiftyone.core.utils as fou
@@ -28,6 +27,14 @@ import fiftyone.utils.annotations as foua
 ls = fou.lazy_import(
     "label_studio_sdk",
     callback=lambda: fou.ensure_import("label_studio_sdk>=0.0.13"),
+)
+brush = fou.lazy_import(
+    "label_studio_converter.brush",
+    callback=lambda: fou.ensure_import("label_studio_converter.brush"),
+)
+etree = fou.lazy_import(
+    "lxml.etree",
+    callback=lambda: fou.ensure_import("lxml.etree"),
 )
 
 
@@ -43,9 +50,10 @@ class LabelStudioBackendConfig(foua.AnnotationBackendConfig):
             classes and attribute to annotate
         media_field ("filepath"): string field name containing the paths to
             media files on disk to upload
-        url: the URL of the Label Studio server
-        api_key: the API key to use for authentication
-        project_name: the name of the project to use on the Label Studio server
+        url (None): the URL of the Label Studio server
+        api_key (None): the API key to use for authentication
+        project_name (None): the name of the project to use on the Label Studio
+            server
     """
 
     def __init__(
@@ -63,6 +71,7 @@ class LabelStudioBackendConfig(foua.AnnotationBackendConfig):
         self.url = url
         self.project_name = project_name
 
+        # store privately so these aren't serialized
         self._api_key = api_key
 
     @property
@@ -72,6 +81,9 @@ class LabelStudioBackendConfig(foua.AnnotationBackendConfig):
     @api_key.setter
     def api_key(self, value):
         self._api_key = value
+
+    def load_credentials(self, url=None, api_key=None):
+        self._load_parameters(url=url, api_key=api_key)
 
 
 class LabelStudioBackend(foua.AnnotationBackend):
@@ -124,11 +136,11 @@ class LabelStudioBackend(foua.AnnotationBackend):
             url=self.config.url, api_key=self.config.api_key
         )
 
-    def upload_annotations(self, samples, launch_editor=False):
+    def upload_annotations(self, samples, anno_key, launch_editor=False):
         api = self.connect_to_api()
 
         logger.info("Uploading media to Label Studio...")
-        results = api.upload_samples(samples, self)
+        results = api.upload_samples(samples, anno_key, self)
         logger.info("Upload complete")
 
         if launch_editor:
@@ -242,12 +254,15 @@ class LabelStudioAnnotationAPI(foua.AnnotationAPI):
             for _id, _mime_type, _filepath in zip(ids, mime_types, filepaths)
         ]
 
-        predictions, id_map = {}, {}
+        predictions = {}
+        id_map = {}
         for label_field, label_info in label_schema.items():
+            label_type = label_info["type"]
             if label_info["existing_field"]:
                 predictions[label_field] = {
                     smp.id: export_label_to_label_studio(
                         smp[label_field],
+                        label_type=label_type,
                         full_result={
                             "from_name": "label",
                             "to_name": "image",
@@ -358,7 +373,7 @@ class LabelStudioAnnotationAPI(foua.AnnotationAPI):
                 )
             else:
                 labels = [
-                    import_label_studio_annotation(r)
+                    import_label_studio_annotation(r, label_type=label_type)
                     for r in latest_annotation.get("result", [])
                 ]
 
@@ -375,17 +390,24 @@ class LabelStudioAnnotationAPI(foua.AnnotationAPI):
         return results
 
     def _export_to_label_studio(self, labels, label_type):
+        if label_type == "instances":
+            raise ValueError(
+                "This method does not support uploading instance "
+                "segmentations. Use upload_samples() instead"
+            )
+
         if _LABEL_TYPES[label_type]["multiple"] is None:
             return export_label_to_label_studio(labels)
 
         return [export_label_to_label_studio(l) for l in labels]
 
-    def upload_samples(self, samples, backend):
+    def upload_samples(self, samples, anno_key, backend):
         """Uploads the given samples to Label Studio according to the given
         backend's annotation and server configuration.
 
         Args:
             samples: a :class:`fiftyone.core.collections.SampleCollection`
+            anno_key: the annotation key
             backend: a :class:`LabelStudioBackend` to use to perform the upload
 
         Returns:
@@ -405,9 +427,10 @@ class LabelStudioAnnotationAPI(foua.AnnotationAPI):
         return LabelStudioAnnotationResults(
             samples,
             config,
-            id_map=id_map,
-            project_id=project.id,
-            uploaded_tasks=uploaded_tasks,
+            anno_key,
+            id_map,
+            project.id,
+            uploaded_tasks,
             backend=backend,
         )
 
@@ -456,10 +479,7 @@ class LabelStudioAnnotationAPI(foua.AnnotationAPI):
             task_ids: list of task ids
         """
         for t_id in task_ids:
-            self._client.make_request(
-                "DELETE",
-                f"/api/tasks/{t_id}",
-            )
+            self._client.make_request("DELETE", f"/api/tasks/{t_id}")
 
     def delete_project(self, project_id):
         """Deletes the project from Label Studio.
@@ -467,10 +487,7 @@ class LabelStudioAnnotationAPI(foua.AnnotationAPI):
         Args:
             project_id: project id
         """
-        self._client.make_request(
-            "DELETE",
-            f"/api/projects/{project_id}",
-        )
+        self._client.make_request("DELETE", f"/api/projects/{project_id}")
 
 
 class LabelStudioAnnotationResults(foua.AnnotationResults):
@@ -480,32 +497,18 @@ class LabelStudioAnnotationResults(foua.AnnotationResults):
     """
 
     def __init__(
-        self, samples, config, id_map, project_id, uploaded_tasks, backend=None
+        self,
+        samples,
+        config,
+        anno_key,
+        id_map,
+        project_id,
+        uploaded_tasks,
+        backend=None,
     ):
-        super().__init__(samples, config, id_map=id_map, backend=backend)
+        super().__init__(samples, config, anno_key, id_map, backend=backend)
         self.project_id = project_id
         self.uploaded_tasks = uploaded_tasks
-
-    def load_credentials(self, url=None, api_key=None):
-        """Load the Label Studio credentials from the given keyword arguments
-        or the FiftyOne annotation config.
-
-        Args:
-            url (None): the url of the Label Studio server
-            api_key (None): the Label Studio API key
-        """
-        self._load_config_parameters(url=url, api_key=api_key)
-
-    def _load_config_parameters(self, **kwargs):
-        config = self.config
-        parameters = fo.annotation_config.backends.get(config.name, {})
-
-        for name, value in kwargs.items():
-            if value is None:
-                value = parameters.get(name, None)
-
-            if value is not None:
-                setattr(config, name, value)
 
     def launch_editor(self):
         """Open a Label Studio tab in browser."""
@@ -520,7 +523,7 @@ class LabelStudioAnnotationResults(foua.AnnotationResults):
             api.delete_project(self.project_id)
 
     @classmethod
-    def _from_dict(cls, d, samples, config):
+    def _from_dict(cls, d, samples, config, anno_key):
         # int keys were serialized as strings...
         uploaded_tasks = {
             int(task_id): source_id
@@ -530,6 +533,7 @@ class LabelStudioAnnotationResults(foua.AnnotationResults):
         return cls(
             samples,
             config,
+            anno_key,
             d["id_map"],
             d["project_id"],
             uploaded_tasks,
@@ -547,10 +551,6 @@ def generate_labeling_config(media, label_type, labels=None):
     Returns:
         a labeling config
     """
-    etree = fou.lazy_import(
-        "lxml.etree", callback=lambda: fou.ensure_import("lxml.etree")
-    )
-
     assert media in ["image", "video"]
     assert (
         label_type in _LABEL_TYPES.keys()
@@ -575,11 +575,16 @@ def generate_labeling_config(media, label_type, labels=None):
     return config_str
 
 
-def import_label_studio_annotation(result):
+def import_label_studio_annotation(result, label_type=None):
     """Imports an annotation from Label Studio.
 
     Args:
         result: the annotation result from Label Studio
+        label_type (None): the label type to use when importing the annotation.
+            This argument is only used when importing brush labels. By default,
+            these labels are imported as semantic segmentations, but you can
+            pass ``label_type="instances"`` to import them as instance
+            segmentations instead
 
     Returns:
         a :class:`fiftyone.core.labels.Label`
@@ -602,7 +607,7 @@ def import_label_studio_annotation(result):
     elif ls_type == "keypointlabels":
         label = _from_keypointlabels(result)
     elif ls_type == "brushlabels":
-        label = _from_brushlabels(result)
+        label = _from_brushlabels(result, label_type=label_type)
     elif ls_type == "number":
         label = _from_number(result)
     else:
@@ -624,12 +629,17 @@ def _update_dict(src_dict, update_dict):
     return new
 
 
-def export_label_to_label_studio(label, full_result=None):
+def export_label_to_label_studio(label, label_type=None, full_result=None):
     """Exports a label to the Label Studio format.
 
     Args:
         label: a :class:`fiftyone.core.labels.Label` or list of
             :class:`fiftyone.core.labels.Label` instances
+        label_type (None): the label type to use when exporting the annotation.
+            This argument is only used when exporting object detections. By
+            default, only the bounding boxes are exported, but you can pass
+            ``label_type="instances"`` to export them as brush labels encoding
+            the instance masks instead
         full_result (None): if non-empty, return the full Label Studio result
 
     Returns:
@@ -639,11 +649,18 @@ def export_label_to_label_studio(label, full_result=None):
     if label is None:
         result_value = {}
         ls_type = None
-        ids = []
+        ids = None
     elif _check_type(label, fol.Classification, fol.Classifications):
         result_value, ls_type, ids = _to_classification(label)
     elif _check_type(label, fol.Detection, fol.Detections):
-        result_value, ls_type, ids = _to_detection(label)
+        if label_type == "instances":
+            size = (
+                full_result["original_width"],
+                full_result["original_height"],
+            )
+            result_value, ls_type, ids = _to_instance(label, size)
+        else:
+            result_value, ls_type, ids = _to_detection(label)
     elif _check_type(label, fol.Polyline, fol.Polylines):
         result_value, ls_type, ids = _to_polyline(label)
     elif _check_type(label, fol.Keypoint, fol.Keypoints):
@@ -651,9 +668,7 @@ def export_label_to_label_studio(label, full_result=None):
     elif isinstance(label, fol.Segmentation):
         result_value, ls_type, ids = _to_segmentation(label)
     elif isinstance(label, fol.Regression):
-        result_value = {"number": label.value}
-        ls_type = "number"
-        ids = label.id
+        result_value, ls_type, ids = _to_regression(label)
     else:
         raise ValueError("Label type %s is not supported" % type(label))
 
@@ -661,6 +676,7 @@ def export_label_to_label_studio(label, full_result=None):
         # return full LS result
         if not isinstance(result_value, (list, tuple)):
             result_value = [result_value]
+            ids = [ids]
 
         return [
             _update_dict(
@@ -726,6 +742,28 @@ def _to_detection(label):
     return result, ls_type, label.id
 
 
+def _to_instance(label, size):
+    ls_type = "brushlabels"
+
+    if isinstance(label, list):
+        return (
+            [_to_instance(l, size)[0] for l in label],
+            ls_type,
+            [l.id for l in label],
+        )
+
+    if isinstance(label, fol.Detections):
+        return (
+            [_to_instance(l, size)[0] for l in label.detections],
+            ls_type,
+            [l.id for l in label.detections],
+        )
+
+    rle = brush.mask2rle(label.to_segmentation(frame_size=size).get_mask())
+    result = {"format": "rle", "rle": rle, "brushlabels": [label.label]}
+    return result, ls_type, label.id
+
+
 def _to_polyline(label):
     ls_type = "polygonlabels"
 
@@ -781,13 +819,13 @@ def _to_keypoint(label):
 
 
 def _to_segmentation(label):
-    brush = fou.lazy_import(
-        "label_studio_converter.brush",
-        callback=lambda: fou.ensure_import("label_studio_converter.brush"),
-    )
     rle = brush.mask2rle(label.get_mask())
     result = {"format": "rle", "rle": rle, "brushlabels": [label.label]}
     return result, "brushlabels", label.id
+
+
+def _to_regression(label):
+    return {"number": label.value}, "number", label.id
 
 
 def _from_choices(result):
@@ -832,18 +870,20 @@ def _from_keypointlabels(result):
     return keypoints
 
 
-def _from_brushlabels(result):
-    brush = fou.lazy_import(
-        "label_studio_converter.brush",
-        callback=lambda: fou.ensure_import("label_studio_converter.brush"),
-    )
-
+def _from_brushlabels(result, label_type=None):
     label_values = result["value"]["brushlabels"]
     img = brush.decode_rle(result["value"]["rle"])
-    mask = img.reshape(
-        (result["original_height"], result["original_width"], 4)
-    )[:, :, 3]
-    return fol.Segmentation(label=label_values[0], mask=mask)
+    shape = (result["original_height"], result["original_width"], 4)
+    mask = img.reshape(shape)[:, :, 3]
+
+    label = label_values[0]
+    segmentation = fol.Segmentation(label=label, mask=mask)
+
+    if label_type == "instances":
+        detections = segmentation.to_detections({255: label}).detections
+        return detections[0] if detections else None
+
+    return segmentation
 
 
 def _from_number(result):
@@ -872,7 +912,7 @@ def _ls_tags_from_type(label_type):
 
 
 def _label_class_from_tag(label_type):
-    """Maps Label Studio parent tag to fo.Label."""
+    """Maps Label Studio parent tag to FiftyOne Label type."""
     reverse = {
         v["parent_tag"].lower(): v["label"] for v in _LABEL_TYPES.values()
     }
@@ -941,6 +981,11 @@ _LABEL_TYPES = {
     ),
     "detections": dict(
         parent_tag="RectangleLabels",
+        child_tag="Label",
+        label=fol.Detection,
+    ),
+    "instances": dict(
+        parent_tag="BrushLabels",
         child_tag="Label",
         label=fol.Detection,
     ),

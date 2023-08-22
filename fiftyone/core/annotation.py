@@ -1,11 +1,12 @@
 """
 Annotation runs framework.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
 from fiftyone.core.runs import Run, RunConfig, RunInfo, RunResults
+from fiftyone.core.odm import patch_annotation_runs
 
 
 class AnnotationInfo(RunInfo):
@@ -56,6 +57,10 @@ class AnnotationMethod(Run):
     @classmethod
     def _results_cache_field(cls):
         return "_annotation_cache"
+
+    @classmethod
+    def _patch_function(cls):
+        return patch_annotation_runs
 
 
 class AnnotationResults(RunResults):

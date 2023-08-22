@@ -1,7 +1,7 @@
 """
 FiftyOne Server filter inputs
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -19,6 +19,7 @@ class OneOf:
 class GroupElementFilter:
     id: t.Optional[str] = None
     slice: t.Optional[str] = None
+    slices: t.Optional[t.List[str]] = None
 
 
 @gql.input  # oneof not working

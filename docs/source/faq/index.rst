@@ -18,7 +18,7 @@ web browser whenever you call
 You can also run FiftyOne
 :ref:`as a desktop application <faq-desktop-app-support>` if you prefer.
 
-Check out the :ref:`enviornments guide <environments>` to see how to use
+Check out the :ref:`environments guide <environments>` to see how to use
 FiftyOne in all common local, remote, cloud, and notebook environments.
 
 .. _faq-supported-browsers:
@@ -48,7 +48,7 @@ your browser or as a desktop App. You can also set the ``desktop_app`` flag of
 your :ref:`FiftyOne config <configuring-fiftyone>` to use the desktop App by
 default.
 
-Check out the :ref:`enviornments guide <environments>` to see how to use
+Check out the :ref:`environments guide <environments>` to see how to use
 FiftyOne in all common local, remote, cloud, and notebook environments.
 
 .. _faq-app-no-session:
@@ -157,11 +157,6 @@ including the following commands in your notebook before creating any plots:
     # Ensure that plotly.js is downloaded
     import plotly.offline as po
     po.init_notebook_mode(connected=True)
-
-Note that FiftyOne currently requires `plotly>=4.14,<5`, which should have been
-automatically installed when you installed FiftyOne. If your Plotly package was
-upgraded after installing FiftyOne, some interactive plotting features may
-not work as expected.
 
 .. _faq-remote-server-data:
 
@@ -307,8 +302,8 @@ Why didn't changes to my dataset save?
 Although **adding** samples to datasets immediately writes them to the
 database, remember that any **edits** that you make to a
 :ref:`sample <adding-sample-fields>` or its
-:ref:`frame labels <video-frame-labels>` will not be written to the database
-until you call :meth:`sample.save() <fiftyone.core.sample.Sample.save>`.
+:ref:`frame labels <video-datasets>` will not be written to the database until
+you call :meth:`sample.save() <fiftyone.core.sample.Sample.save>`.
 
 Similarly, **setting** the properties of a |Dataset| object will be immediately
 saved, but you must call
@@ -523,7 +518,7 @@ On your local machine, you can
 :ref:`connect to these remote sessions <remote-app-local-machine>` using a
 different local port `XXXX` and `YYYY` for each.
 
-If you do not have Fiftyone installed on your local machine, open a new
+If you do not have FiftyOne installed on your local machine, open a new
 terminal window on your local machine and execute the following command to
 setup port forwarding to connect to your remote sessions:
 
@@ -685,7 +680,7 @@ Are the Brain methods open source?
 
 Although the `core library <https://github.com/voxel51/fiftyone>`_ is open
 source and the :ref:`Brain methods <fiftyone-brain>` are freely available for
-use for any commerical or non-commerical purposes, the Brain methods are closed
+use for any commercial or non-commercial purposes, the Brain methods are closed
 source.
 
 Check out the :ref:`Brain documentation <fiftyone-brain>` for detailed

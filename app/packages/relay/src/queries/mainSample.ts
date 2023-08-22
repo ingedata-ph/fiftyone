@@ -1,13 +1,27 @@
 import { graphql } from "react-relay";
 
-export default graphql`
+import r from "../resolve";
+
+export default r(graphql`
   query mainSampleQuery(
     $dataset: String!
     $view: BSONArray!
     $filter: SampleFilter!
+    $filters: JSON
   ) {
-    sample(dataset: $dataset, view: $view, filter: $filter) {
+    sample(dataset: $dataset, view: $view, filters: $filters, filter: $filter) {
+      __typename
       ... on ImageSample {
+        aspectRatio
+        id
+        sample
+        urls {
+          field
+          url
+        }
+      }
+      ... on PointCloudSample {
+        aspectRatio
         id
         sample
         urls {
@@ -16,9 +30,11 @@ export default graphql`
         }
       }
       ... on VideoSample {
+        aspectRatio
         id
-        sample
         frameRate
+        frameNumber
+        sample
         urls {
           field
           url
@@ -26,4 +42,4 @@ export default graphql`
       }
     }
   }
-`;
+`);

@@ -1,10 +1,8 @@
-import { atom, selectorFamily } from "recoil";
-
 import { VALID_PRIMITIVE_TYPES } from "@fiftyone/utilities";
-
+import { atom, selectorFamily } from "recoil";
 import { expandPath, fields } from "./schema";
-import { State } from "./types";
 import { hiddenLabelIds } from "./selectors";
+import { State } from "./types";
 
 export const modalFilters = atom<State.Filters>({
   key: "modalFilters",
@@ -17,7 +15,7 @@ export const filters = atom<State.Filters>({
 });
 
 export const filter = selectorFamily<
-  State.Filter,
+  State.Filters,
   { path: string; modal: boolean }
 >({
   key: "filter",
@@ -58,44 +56,6 @@ export const hasFilters = selectorFamily<boolean, boolean>({
       const hidden = Boolean(modal && get(hiddenLabelIds).size);
 
       return f || hidden;
-    },
-  cachePolicy_UNSTABLE: {
-    eviction: "most-recent",
-  },
-});
-
-export const matchedTags = selectorFamily<
-  Set<string>,
-  { key: State.TagKey; modal: boolean }
->({
-  key: "matchedTags",
-  get:
-    ({ key, modal }) =>
-    ({ get }) => {
-      const tags = get(modal ? modalFilters : filters).tags;
-      if (tags && tags[key]) {
-        return new Set(tags[key]);
-      }
-      return new Set();
-    },
-  set:
-    ({ key, modal }) =>
-    ({ get, set }, value) => {
-      const atom = modal ? modalFilters : filters;
-      const stages = {
-        ...get(atom),
-      };
-      const tags = { ...(stages.tags || {}) };
-      if (value instanceof Set && value.size) {
-        tags[key] = Array.from(value);
-      } else if (stages.tags && key in stages.tags) {
-        delete tags[key];
-      }
-      stages.tags = tags;
-      if (Object.keys(stages.tags).length === 0) {
-        delete stages["tags"];
-      }
-      set(atom, stages);
     },
   cachePolicy_UNSTABLE: {
     eviction: "most-recent",

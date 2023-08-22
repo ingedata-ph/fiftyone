@@ -1,10 +1,10 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 
 import { getColor } from "@fiftyone/utilities";
 import { BaseState, Coordinates, NONFINITE } from "../state";
-import { sizeBytes } from "./util";
+import { isValidColor, sizeBytes } from "./util";
 
 // in numerical order (CONTAINS_BORDER takes precedence over CONTAINS_CONTENT)
 export enum CONTAINS {
@@ -41,6 +41,7 @@ export interface SelectData {
 }
 
 export interface RegularLabel extends BaseLabel {
+  _id?: string;
   label?: string;
   confidence?: number | NONFINITE;
 }
@@ -92,20 +93,59 @@ export abstract class CoordinateOverlay<
     return state.options.selectedLabels.includes(this.label.id);
   }
 
-  getColor({ options: { coloring } }: Readonly<State>): string {
+  getColor({
+    options: { coloring, customizeColorSetting },
+  }: Readonly<State>): string {
     let key;
-
-    switch (coloring.by) {
-      case "field":
-        return getColor(coloring.pool, coloring.seed, this.field);
-      case "instance":
-        key = this.label.index !== undefined ? "index" : "id";
-        break;
-      default:
-        key = "label";
+    // video fields path needs to be converted
+    const path = this.field.startsWith("frames.")
+      ? this.field.slice("frames.".length)
+      : this.field;
+    const field = customizeColorSetting.find((s) => s.path === path);
+    if (coloring.by === "field") {
+      if (isValidColor(field?.fieldColor)) {
+        return field.fieldColor;
+      }
+      return getColor(coloring.pool, coloring.seed, this.field);
     }
+    if (coloring.by === "value") {
+      if (field) {
+        key = field.colorByAttribute
+          ? field.colorByAttribute === "index"
+            ? "id"
+            : field.colorByAttribute
+          : "label";
 
-    return getColor(coloring.pool, coloring.seed, this.label[key]);
+        // use the first value as the fallback default if it's a listField
+        const currentValue = Array.isArray(this.label[key])
+          ? this.label[key][0]
+          : this.label[key];
+        // check if this label has a assigned color, use it if it is a valid color
+        const valueColor = field?.valueColors?.find((l) => {
+          if (["none", "null", "undefined"].includes(l.value?.toLowerCase())) {
+            return typeof this.label[key] === "string"
+              ? l.value?.toLowerCase === this.label[key]
+              : !this.label[key];
+          }
+          if (["True", "False"].includes(l.value?.toString())) {
+            return (
+              l.value?.toString().toLowerCase() ==
+              this.label[key]?.toString().toLowerCase()
+            );
+          }
+          return Array.isArray(this.label[key])
+            ? this.label[key]
+                .map((list) => list.toString())
+                .includes(l.value?.toString())
+            : l.value?.toString() == this.label[key]?.toString();
+        })?.color;
+        return isValidColor(valueColor)
+          ? valueColor
+          : getColor(coloring.pool, coloring.seed, currentValue);
+      } else {
+        return getColor(coloring.pool, coloring.seed, this.label["label"]);
+      }
+    }
   }
 
   abstract containsPoint(state: Readonly<State>): CONTAINS;

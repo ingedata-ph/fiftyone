@@ -1,9 +1,9 @@
-import { modal } from "@fiftyone/state";
+import { activeColorField, isModalActive } from "@fiftyone/state";
 import React from "react";
 import { useRecoilValue } from "recoil";
 import styled from "styled-components";
 
-import HorizontalNav from "../components/HorizontalNav";
+import ColorModal from "./ColorModal/ColorModal";
 import Modal from "./Modal";
 import SamplesContainer from "./SamplesContainer";
 
@@ -23,13 +23,14 @@ const Body = styled.div`
 `;
 
 function Dataset() {
-  const isModalActive = Boolean(useRecoilValue(modal));
+  const isModalOpen = useRecoilValue(isModalActive);
+  const isCustomizeColorModalActive = useRecoilValue(activeColorField);
 
   return (
     <>
-      {isModalActive && <Modal />}
+      {isModalOpen && <Modal />}
+      {isCustomizeColorModalActive && <ColorModal />}
       <Container>
-        <HorizontalNav key={"nav"} />
         <Body key={"body"}>
           <SamplesContainer key={"samples"} />
         </Body>

@@ -1,14 +1,54 @@
 """
-FiftyOne Server utils
+FiftyOne Server utils.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
+import typing as t
+
+import cachetools
+from dacite import Config, from_dict as _from_dict
+from dacite.core import T
+from dacite.data import Data
+
 import fiftyone.core.collections as foc
+import fiftyone.core.dataset as fod
 import fiftyone.core.fields as fof
 import fiftyone.core.labels as fol
 import fiftyone.core.media as fom
+
+
+_cache = cachetools.TTLCache(maxsize=10, ttl=900)  # ttl in seconds
+_dacite_config = Config(check_types=False)
+
+
+def load_and_cache_dataset(name):
+    """Loads the dataset with the given name and caches it.
+
+    This method is a wrapper around :func:`fiftyone.core.dataset.load_dataset`
+    that stores a reference to every dataset it loads in a TTL cache to ensure
+    that references to recently used datasets exist in memory so that dataset
+    objects aren't garbage collected between async calls.
+
+    It is desirable to avoid dataset objects being garbage collected because
+    datasets are singletons and may have objects (eg brain results) that are
+    expensive to load cached on them.
+
+    Args:
+        name: the dataset name
+
+    Returns:
+        a :class:`fiftyone.core.dataset.Dataset`
+    """
+    dataset = fod.load_dataset(name)
+
+    # Store reference in TTL cache to defer garbage collection
+    # IMPORTANT: we don't return already cached objects here because a dataset
+    # can be deleted and another created with the same name
+    _cache[name] = dataset
+
+    return dataset
 
 
 def change_sample_tags(sample_collection, changes):
@@ -54,26 +94,18 @@ def change_label_tags(sample_collection, changes, label_fields=None):
         sample_collection.untag_labels(del_tags, label_fields=label_fields)
 
 
-def iter_label_fields(view: foc.SampleCollection):
-    """
-    Yields the labels of the
-    :class:`fiftyone.core.collections.SampleCollection`
+def from_dict(data_class: t.Type[T], data: Data) -> T:
+    """Wrapping function for ``dacite.from_dict`` that ensures a common
+    configuration is used.
 
     Args:
-        view: a :class:`fiftyone.core.collections.SampleCollection`
+        data_class: a dataclass
+        data: the data with which to instantiate the dataclass instance
+
+    Returns:
+        a dataclass instance
     """
-    for field_name, field in view.get_field_schema(
-        ftype=fof.EmbeddedDocumentField, embedded_doc_type=fol.Label
-    ).items():
-        yield field_name, field
-
-    if view.media_type != fom.VIDEO:
-        return
-
-    for field_name, field in view.get_frame_field_schema(
-        ftype=fof.EmbeddedDocumentField, embedded_doc_type=fol.Label
-    ).items():
-        yield "frames.%s" % field_name, field
+    return _from_dict(data_class, data, config=_dacite_config)
 
 
 def meets_type(field: fof.Field, type_or_types):

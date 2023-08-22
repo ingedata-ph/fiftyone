@@ -1,14 +1,15 @@
-import { atomFamily, selector, selectorFamily } from "recoil";
-
+import { LabelData } from "@fiftyone/looker";
 import {
   DETECTION,
   DETECTIONS,
   EMBEDDED_DOCUMENT_FIELD,
   Field,
-  LABELS,
-  LABELS_PATH,
   LABEL_LIST,
   LABEL_LISTS,
+  LABEL_LISTS_MAP,
+  LABELS,
+  LABELS_MAP,
+  LABELS_PATH,
   LIST_FIELD,
   meetsFieldType,
   Schema,
@@ -16,9 +17,11 @@ import {
   VALID_PRIMITIVE_TYPES,
   withPath,
 } from "@fiftyone/utilities";
-
+import { atomFamily, RecoilState, selector, selectorFamily } from "recoil";
 import * as atoms from "./atoms";
+import { activeModalSample } from "./groups";
 import { State } from "./types";
+import { getLabelFields } from "./utils";
 
 export const schemaReduce = (schema: Schema, field: StrictField): Schema => {
   schema[field.name] = {
@@ -34,8 +37,7 @@ export const filterPaths = (
 ): string[] => {
   return paths
     ? paths.filter((path) => {
-        if (path.startsWith("tags.") || path.startsWith("_label_tags."))
-          return true;
+        if (path === "_label_tags") return true;
 
         const keys = path.split(".");
         let fields = schema;
@@ -50,14 +52,48 @@ export const filterPaths = (
     : [];
 };
 
-export const buildSchema = (dataset: State.Dataset): Schema => {
-  const schema = dataset.sampleFields.reduce(schemaReduce, {});
+export const buildFlatExtendedSchema = (schema: Schema): Schema => {
+  const flatSchema = {} as Schema;
+  const fieldsQueue = [];
+  for (const fieldName in schema) {
+    const field = schema[fieldName];
+    fieldsQueue.push(field);
+  }
+  while (fieldsQueue?.length) {
+    const ff = fieldsQueue.shift();
+    const ffNest = ff?.fields;
+    const fieldPath = ff?.path;
 
-  if (dataset.frameFields && dataset.frameFields.length) {
+    if (ffNest) {
+      for (const fNested in ffNest) {
+        fieldsQueue.push(ffNest[fNested]);
+      }
+    }
+
+    flatSchema[fieldPath] = {
+      ...ff,
+      visible: false,
+    };
+  }
+
+  return flatSchema;
+};
+
+export const buildSchema = (
+  sampleFields: StrictField[],
+  frameFields: StrictField[],
+  flat = false
+): Schema => {
+  const schema = sampleFields.reduce(schemaReduce, {});
+
+  // TODO: mixed datasets - test video
+  if (frameFields && frameFields.length) {
     schema.frames = {
       ftype: LIST_FIELD,
       name: "frames",
-      fields: dataset.frameFields.reduce(schemaReduce, {}),
+      fields: flat
+        ? buildFlatExtendedSchema(frameFields.reduce(schemaReduce, {}))
+        : frameFields.reduce(schemaReduce, {}),
       dbField: null,
       description: null,
       info: null,
@@ -66,13 +102,20 @@ export const buildSchema = (dataset: State.Dataset): Schema => {
     };
   }
 
+  if (flat) {
+    return buildFlatExtendedSchema(sampleFields.reduce(schemaReduce, {}));
+  }
+
   return schema;
 };
 
-export const fieldSchema = selectorFamily<Schema, { space: State.SPACE }>({
+export const fieldSchema = selectorFamily<
+  Schema,
+  { space: State.SPACE; flat?: boolean }
+>({
   key: "fieldSchema",
   get:
-    ({ space }) =>
+    ({ space, flat = false }) =>
     ({ get }) => {
       const dataset = get(atoms.dataset);
 
@@ -80,11 +123,18 @@ export const fieldSchema = selectorFamily<Schema, { space: State.SPACE }>({
         return {};
       }
 
-      const fields = (
+      if (flat) {
+        return buildFlatExtendedSchema(
+          (space === State.SPACE.FRAME
+            ? dataset.frameFields
+            : dataset.sampleFields
+          ).reduce(schemaReduce, {})
+        );
+      }
+
+      return (
         space === State.SPACE.FRAME ? dataset.frameFields : dataset.sampleFields
       ).reduce(schemaReduce, {});
-
-      return fields;
     },
 });
 
@@ -128,7 +178,7 @@ export const fullSchema = selector<Schema>({
 
     const frames = get(fieldSchema({ space: State.SPACE.FRAME }));
 
-    if (Boolean(Object.keys(frames).length)) {
+    if (Object.keys(frames).length) {
       return {
         ...schema,
         frames: {
@@ -138,6 +188,8 @@ export const fullSchema = selector<Schema>({
           embeddedDocType: null,
           subfield: "Frame",
           dbField: null,
+          description: null,
+          info: null,
         },
       } as Schema;
     }
@@ -157,20 +209,24 @@ export const fieldPaths = selectorFamily<
 >({
   key: "fieldPaths",
   get:
-    ({ path, space, ftype, embeddedDocType }) =>
+    ({ path, space, ftype, embeddedDocType } = {}) =>
     ({ get }) => {
       if (path && space) {
         throw new Error("path and space provided");
       }
 
-      const sampleLabels = Object.keys(
-        get(fieldSchema({ space: State.SPACE.SAMPLE }))
-      )
+      // use { flat: true } to get schema's dynamic fields included
+      const sampleFields = get(
+        fieldSchema({ space: State.SPACE.SAMPLE, flat: true })
+      );
+      const frameFields = get(
+        fieldSchema({ space: State.SPACE.FRAME, flat: true })
+      );
+
+      const sampleLabels = Object.keys(sampleFields)
         .filter((l) => !l.startsWith("_"))
         .sort();
-      const frameLabels = Object.keys(
-        get(fieldSchema({ space: State.SPACE.FRAME }))
-      )
+      const frameLabels = Object.keys(frameFields)
         .filter((l) => !l.startsWith("_"))
         .map((l) => "frames." + l)
         .sort();
@@ -218,7 +274,7 @@ export const fields = selectorFamily<
 >({
   key: "fields",
   get:
-    (params) =>
+    (params = {}) =>
     ({ get }) => {
       if (!params.path && !params.space) {
         throw new Error("invalid parameters");
@@ -249,6 +305,8 @@ export const field = selectorFamily<Field | null, string>({
           embeddedDocType: "FRAMES",
           fields: schema,
           dbField: null,
+          description: null,
+          info: null,
         };
         for (const name of keys) {
           if (schema[name]) {
@@ -279,13 +337,20 @@ export const field = selectorFamily<Field | null, string>({
 export const labelFields = selectorFamily<string[], { space?: State.SPACE }>({
   key: "labelFields",
   get:
-    (params) =>
+    ({ space }) =>
     ({ get }) => {
-      const paths = get(fieldPaths(params));
+      const dataset = get(atoms.dataset);
 
-      return paths.filter((path) =>
-        LABELS.includes(get(field(path)).embeddedDocType)
-      );
+      if (space) {
+        return space === State.SPACE.FRAME
+          ? getLabelFields(dataset.frameFields, "frames.")
+          : getLabelFields(dataset.sampleFields);
+      }
+
+      return [
+        ...getLabelFields(dataset.sampleFields),
+        ...getLabelFields(dataset.frameFields, "frames."),
+      ];
     },
 });
 
@@ -298,9 +363,9 @@ export const labelPaths = selectorFamily<
     ({ expanded = true, ...params }) =>
     ({ get }) => {
       const fields = get(labelFields(params));
+
       return fields.map((path) => {
         const labelField = get(field(path));
-
         const typePath = labelField.embeddedDocType.split(".");
         const type = typePath[typePath.length - 1];
 
@@ -312,6 +377,57 @@ export const labelPaths = selectorFamily<
       });
     },
 });
+
+export const activeLabels = selectorFamily<LabelData[], { expanded?: boolean }>(
+  {
+    key: "activeLabels",
+    get:
+      ({ expanded = true }) =>
+      ({ get }) => {
+        const sample = get(activeModalSample);
+        const paths = get(labelPaths({ expanded }));
+        const pathsSet = new Set(paths);
+
+        const results = [];
+
+        const add = (label, path) => {
+          if (!(label._cls in LABELS_MAP) || label._cls in LABEL_LISTS_MAP)
+            return;
+
+          results.push({
+            labelId: label._id,
+            sampleId: sample._id,
+            field: path,
+          });
+        };
+
+        const accumulate = (data: object, prefix = "") => {
+          for (const field in data) {
+            const label = data[field];
+            if (!label) continue;
+            const currentPath = `${prefix}${field}`;
+            if (paths.every((p) => !p.startsWith(currentPath))) continue;
+
+            const processed = Array.isArray(label) ? label : [label];
+            processed.forEach((label) => {
+              if (label._cls) {
+                accumulate(label, `${currentPath}.`);
+              }
+            });
+
+            if (!pathsSet.has(currentPath)) continue;
+
+            if (Array.isArray(label)) {
+              label.forEach((l) => add(l, currentPath));
+            } else add(label, currentPath);
+          }
+        };
+
+        accumulate(sample);
+        return results;
+      },
+  }
+);
 
 export const expandPath = selectorFamily<string, string>({
   key: "expandPath",
@@ -364,9 +480,10 @@ export const activeFields = selectorFamily<string[], { modal: boolean }>({
   get:
     ({ modal }) =>
     ({ get }) => {
+      const dataset = get(atoms.dataset);
       return filterPaths(
         get(_activeFields({ modal })) || get(labelFields({})),
-        buildSchema(get(atoms.dataset))
+        buildSchema(dataset.sampleFields, dataset.frameFields)
       );
     },
   set:
@@ -376,15 +493,31 @@ export const activeFields = selectorFamily<string[], { modal: boolean }>({
     },
 });
 
-export const activeField = selectorFamily<
+type ActiveFieldSelector = (params: {
+  /**
+   * Whether the field is in a modal or not
+   */
+  modal: boolean;
+  /**
+   * The path of the field
+   * @example "frames.0.label"
+   */
+  path: string;
+}) => RecoilState<boolean>;
+
+/**
+ * Get or set the active state of a field.
+ */
+export const activeField: ActiveFieldSelector = selectorFamily<
   boolean,
   { modal: boolean; path: string }
 >({
   key: "activeField",
   get:
     ({ modal, path }) =>
-    ({ get }) =>
-      get(activeFields({ modal })).includes(path),
+    ({ get }) => {
+      return get(activeFields({ modal })).includes(path);
+    },
 
   set:
     ({ modal, path }) =>
@@ -394,58 +527,6 @@ export const activeField = selectorFamily<
         activeFields({ modal }),
         active ? [path, ...fields] : fields.filter((field) => field !== path)
       );
-    },
-});
-
-export const activeTags = selectorFamily<string[], boolean>({
-  key: "activeTags",
-  get:
-    (modal) =>
-    ({ get }) => {
-      return get(activeFields({ modal }))
-        .filter((t) => t.startsWith("tags."))
-        .map((t) => t.slice(5));
-    },
-  set:
-    (modal) =>
-    ({ get, set }, value) => {
-      if (Array.isArray(value)) {
-        const tags = value.map((v) => "tags." + v);
-        const prevActiveTags = get(activeTags(modal));
-        let active = get(activeFields({ modal })).filter((v) =>
-          v.startsWith("tags.") ? tags.includes(v) : true
-        );
-        if (tags.length && prevActiveTags.length < tags.length) {
-          active = [tags[0], ...active.filter((v) => v !== tags[0])];
-        }
-        set(activeFields({ modal }), active);
-      }
-    },
-});
-
-export const activeLabelTags = selectorFamily<string[], boolean>({
-  key: "activeLabelTags",
-  get:
-    (modal) =>
-    ({ get }) => {
-      return get(activeFields({ modal }))
-        .filter((t) => t.startsWith("_label_tags."))
-        .map((t) => t.slice("_label_tags.".length));
-    },
-  set:
-    (modal) =>
-    ({ get, set }, value) => {
-      if (Array.isArray(value)) {
-        const tags = value.map((v) => "_label_tags." + v);
-        const prevActiveTags = get(activeLabelTags(modal));
-        let active = get(activeFields({ modal })).filter((v) =>
-          v.startsWith("_label_tags.") ? tags.includes(v) : true
-        );
-        if (tags.length && prevActiveTags.length < tags.length) {
-          active = [tags[0], ...active.filter((v) => v !== tags[0])];
-        }
-        set(activeFields({ modal }), active);
-      }
     },
 });
 

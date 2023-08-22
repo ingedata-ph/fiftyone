@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import {
   RecoilValueReadOnly,
   SetterOrUpdater,
@@ -10,14 +10,14 @@ import styled from "styled-components";
 
 import * as fos from "@fiftyone/state";
 
-import ExcludeOption from "./Exclude";
-import RangeSlider from "../Common/RangeSlider";
-import Checkbox from "../Common/Checkbox";
-import { Button } from "../utils";
 import { DATE_FIELD, DATE_TIME_FIELD, FLOAT_FIELD } from "@fiftyone/utilities";
 import { formatDateTime } from "../../utils/generic";
-import withSuspense from "./withSuspense";
+import Checkbox from "../Common/Checkbox";
+import RangeSlider from "../Common/RangeSlider";
 import FieldLabelAndInfo from "../FieldLabelAndInfo";
+import { Button } from "../utils";
+import FilterOption from "./categoricalFilter/filterOption/FilterOption";
+import withSuspense from "./withSuspense";
 
 const NamedRangeSliderContainer = styled.div`
   margin: 3px;
@@ -31,7 +31,7 @@ const NamedRangeSliderHeader = styled.div`
 
 const RangeSliderContainer = styled.div`
   background: ${({ theme }) => theme.background.level2};
-  border: 1px solid var(--joy-palette-divider);
+  border: 1px solid var(--fo-palette-divider);
   border-radius: 2px;
   color: ${({ theme }) => theme.text.secondary};
   margin-top: 0.25rem;
@@ -112,9 +112,9 @@ type Props = {
   modal: boolean;
   path: string;
   named?: boolean;
+  color: string;
   onFocus?: () => void;
   onBlur?: () => void;
-  title: string;
 };
 
 const NumericFieldFilter = ({
@@ -122,18 +122,37 @@ const NumericFieldFilter = ({
   modal,
   path,
   named = true,
-  title,
+  color,
 }: Props) => {
-  const color = useRecoilValue(fos.pathColor({ modal, path }));
   const name = path.split(".").slice(-1)[0];
+  const isFilterMode = useRecoilValue(fos.isSidebarFilterMode);
+  const excludeAtom = fos.numericExcludeAtom({
+    path,
+    modal,
+    defaultRange,
+  });
+  const isMatchingAtom = fos.numericIsMatchingAtom({
+    path,
+    modal,
+    defaultRange,
+  });
+  const values = useRecoilValue(
+    fos.rangeAtom({
+      modal,
+      path,
+      defaultRange,
+      withBounds: true,
+    })
+  );
+  const setExcluded = excludeAtom ? useSetRecoilState(excludeAtom) : null;
+  const setIsMatching = isMatchingAtom
+    ? useSetRecoilState(isMatchingAtom)
+    : null;
 
   const setFilter = useSetRecoilState(fos.filter({ modal, path }));
   const bounds = useRecoilValue(fos.boundsAtom({ path, defaultRange }));
   const ftype = useRecoilValue(fos.fieldType({ path }));
   const field = useRecoilValue(fos.field(path));
-  const hasDefaultRange = useRecoilValue(
-    fos.isDefaultRange({ modal, path, defaultRange })
-  );
   const hasBounds = bounds.every((b) => b !== null);
   const nonfinites = useNonfinites({
     modal,
@@ -143,6 +162,9 @@ const NumericFieldFilter = ({
   });
 
   const isFiltered = useRecoilValue(fos.fieldIsFiltered({ modal, path }));
+  const hasVisibilitySetting = useRecoilValue(
+    fos.fieldHasVisibilitySetting({ modal, path })
+  );
 
   const bounded = useRecoilValue(
     fos.boundedCount({ modal, path, extended: false })
@@ -157,10 +179,43 @@ const NumericFieldFilter = ({
   );
 
   const hasNone = nonfinites.some((x) => x[0] === "none");
+  const isSliderAtInitialPostion =
+    bounds[0] === values[0] && bounds[1] === values[1];
 
-  if (!hasNonfinites && !hasBounds && named) {
+  // if range is not in default position, nonfinites should not be shown, but they should be set to false
+  useEffect(() => {
+    if (!isSliderAtInitialPostion) {
+      nonfinites.forEach(([_, { setValue }]) => {
+        setValue(false);
+      });
+    }
+  }, [isSliderAtInitialPostion, nonfinites]);
+
+  // only show all four options the field is a nested ListField.
+  // pass down nestedField as a prop to generate options
+  const fieldPath = path.split(".").slice(0, -1).join(".");
+  const fieldSchema = useRecoilValue(fos.field(fieldPath));
+  const nestedField = fieldSchema?.ftype.includes("ListField")
+    ? fieldSchema?.dbField?.toLowerCase()
+    : undefined;
+
+  // if the field is a keypoint label, there is no need to show match options
+  const isKeyPoints = fieldSchema?.dbField === "keypoints";
+
+  const initializeSettings = () => {
+    setFilter([null, null]);
+    setExcluded && setExcluded(false);
+    setIsMatching && setIsMatching(!nestedField);
+  };
+
+  // we do not want to show nestedfield's index field
+  // if confidence only has none value, we do not want to show it
+  // but we want to show 'no results' fields with empty intfield/floatfield
+  if (!field || (!hasBounds && !hasNonfinites && hasNone)) {
     return null;
   }
+
+  const key = path.replace(/[ ,.]/g, "-");
 
   return (
     <NamedRangeSliderContainer
@@ -173,13 +228,7 @@ const NumericFieldFilter = ({
           nested
           field={field}
           color={color}
-          template={({
-            label,
-            hoverHanlders,
-            FieldInfoIcon,
-            hoverTarget,
-            container,
-          }) => (
+          template={({ label, hoverTarget }) => (
             <NamedRangeSliderHeader>
               <span ref={hoverTarget}>{label}</span>
             </NamedRangeSliderHeader>
@@ -190,6 +239,7 @@ const NumericFieldFilter = ({
       <RangeSliderContainer
         onMouseDown={(event) => event.stopPropagation()}
         style={{ cursor: "default" }}
+        data-cy={`numeric-slider-container-${key}`}
       >
         {!hasBounds && !named && !hasNonfinites && (
           <Checkbox
@@ -216,6 +266,7 @@ const NumericFieldFilter = ({
               defaultRange,
             })}
             color={color}
+            key={key}
           />
         ) : hasBounds ? (
           <Checkbox
@@ -224,7 +275,7 @@ const NumericFieldFilter = ({
             disabled={true}
             name={bounds[0]}
             setValue={() => {}}
-            count={bounded}
+            count={isFilterMode ? bounded : undefined} // visibility mode does not show count
             subcountAtom={fos.boundedCount({
               modal,
               path,
@@ -232,13 +283,13 @@ const NumericFieldFilter = ({
             })}
             formatter={
               [DATE_TIME_FIELD, DATE_FIELD].includes(ftype)
-                ? (v) => formatDateTime(v, timeZone)
-                : null
+                ? (v) => (v ? formatDateTime(v, timeZone) : null)
+                : (v) => (typeof v === "number" ? v.toString() : null)
             }
             value={false}
           />
         ) : null}
-        {((hasNone && hasDefaultRange) || !hasBounds) &&
+        {((hasNone && isSliderAtInitialPostion) || !hasBounds) &&
           nonfinites.map(([key, props]) => (
             <Checkbox
               key={key}
@@ -249,22 +300,24 @@ const NumericFieldFilter = ({
               {...props}
             />
           ))}
-        {isFiltered && nonfinites.length > 0 && hasBounds && (
-          <ExcludeOption
-            excludeAtom={fos.excludeAtom({
-              path,
-              modal,
-              defaultRange,
-            })}
-            valueName={""}
+        {isFiltered && hasBounds && (
+          <FilterOption
+            nestedField={nestedField}
+            shouldNotShowExclude={false} // only boolean fields don't use exclude
+            excludeAtom={excludeAtom}
+            isMatchingAtom={isMatchingAtom}
+            valueName={field?.name ?? ""}
+            path={path}
             color={color}
+            modal={modal}
+            isKeyPointLabel={isKeyPoints}
           />
         )}
-        {isFiltered && (
+        {(isFiltered || hasVisibilitySetting) && (
           <Button
             text={"Reset"}
             color={color}
-            onClick={() => setFilter(null)}
+            onClick={initializeSettings}
             style={{
               margin: "0.25rem -0.5rem",
               height: "2rem",

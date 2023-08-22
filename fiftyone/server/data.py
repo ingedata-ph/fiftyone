@@ -1,7 +1,7 @@
 """
 FiftyOne Server data
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -21,7 +21,6 @@ T = t.TypeVar("T")
 @dataclass
 class Context:
     db: mtr.AsyncIOMotorDatabase
-    session: mtr.AsyncIOMotorClientSession
     dataloaders: t.Dict[t.Type[t.Any], DataLoader[str, t.Type[t.Any]]]
     request: strq.Request
     response: strp.Response

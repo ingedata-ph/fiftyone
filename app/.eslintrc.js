@@ -10,8 +10,8 @@ module.exports = {
     "plugin:react/recommended",
     "plugin:react-hooks/recommended",
     "plugin:react/jsx-runtime",
-    "plugin:prettier/recommended",
     "plugin:@typescript-eslint/recommended",
+    "prettier",
   ],
   globals: {
     Atomics: "readonly",
@@ -42,6 +42,26 @@ module.exports = {
         caughtErrorsIgnorePattern: "^_",
       },
     ],
+    // allow namespace for type export
+    "@typescript-eslint/no-namespace": "off",
+    "@typescript-eslint/no-non-null-assertion": "off",
+    "react/display-name": "off",
+    "react/no-unknown-property": [
+      "warn",
+      {
+        // this is for react-three-fiber props
+        ignore: [
+          "object",
+          "attach",
+          "rotation",
+          "position",
+          "args",
+          "linewidth",
+          "transparent",
+        ],
+      },
+    ],
+    "react/prop-types": 0,
   },
   settings: {
     react: {

@@ -1,7 +1,7 @@
 """
 Dataset runs framework.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
@@ -9,7 +9,7 @@ from copy import copy, deepcopy
 import datetime
 import logging
 
-from bson import json_util
+from bson import json_util, DBRef
 
 import eta.core.serial as etas
 import eta.core.utils as etau
@@ -84,6 +84,15 @@ class RunConfig(Config):
         """The :class:`Run` class associated with this config."""
         return etau.get_class(self.cls[: -len("Config")])
 
+    def load_credentials(self, **kwargs):
+        """Loads any necessary credentials from the given keyword arguments or
+        the relevant FiftyOne config.
+
+        Args:
+            **kwargs: subclass-specific credentials
+        """
+        pass
+
     def build(self):
         """Builds the :class:`Run` instance associated with this config.
 
@@ -147,6 +156,13 @@ class Run(Configurable):
         raise NotImplementedError("subclass must implement _run_str()")
 
     @classmethod
+    def _patch_function(cls):
+        """A function that can patch any ReferenceField issues with a dataset's
+        runs.
+        """
+        raise NotImplementedError("subclass must implement _patch_function()")
+
+    @classmethod
     def _results_cache_field(cls):
         """The :class:`fiftyone.core.dataset.Dataset` field that stores the
         results cache for these runs.
@@ -164,6 +180,15 @@ class Run(Configurable):
         """
         pass
 
+    def ensure_usage_requirements(self):
+        """Ensures that any necessary packages to use existing results for this
+        run are installed.
+
+        Runs should respect ``fiftyone.config.requirement_error_level`` when
+        handling errors.
+        """
+        pass
+
     def get_fields(self, samples, key):
         """Gets the fields that were involved in the given run.
 
@@ -174,7 +199,17 @@ class Run(Configurable):
         Returns:
             a list of fields
         """
-        raise NotImplementedError("subclass must implement get_fields()")
+        return []
+
+    def rename(self, samples, key, new_key):
+        """Performs any necessary operations required to rename this run's key.
+
+        Args:
+            samples: a :class:`fiftyone.core.collections.SampleCollection`
+            key: a run key
+            new_key: a new run key
+        """
+        pass
 
     def cleanup(self, samples, key):
         """Cleans up the results of the run with the given key from the
@@ -184,7 +219,7 @@ class Run(Configurable):
             samples: a :class:`fiftyone.core.collections.SampleCollection`
             key: a run key
         """
-        raise NotImplementedError("subclass must implement cleanup()")
+        pass
 
     def register_run(self, samples, key, overwrite=True):
         """Registers a run of this method under the given key on the given
@@ -293,18 +328,95 @@ class Run(Configurable):
             )
 
     @classmethod
-    def list_runs(cls, samples):
+    def list_runs(cls, samples, type=None, **kwargs):
         """Returns the list of run keys on the given collection.
 
         Args:
             samples: a :class:`fiftyone.core.collections.SampleCollection`
+            type (None): a :class:`fiftyone.core.runs.Run` type. If provided,
+                only runs that are a subclass of this type are included
+            **kwargs: optional config parameters to match
 
         Returns:
             a list of run keys
         """
-        dataset_doc = samples._root_dataset._doc
-        run_docs = getattr(dataset_doc, cls._runs_field())
-        return sorted(run_docs.keys())
+        run_docs = cls._get_run_docs(samples)
+
+        if etau.is_str(type):
+            type = etau.get_class(type)
+
+        if type is not None or kwargs:
+            keys = []
+            for key in run_docs.keys():
+                try:
+                    run_info = cls.get_run_info(samples, key)
+                    config = run_info.config
+                except:
+                    logger.warning(
+                        "Failed to load info for %s with key '%s'",
+                        cls._run_str(),
+                        key,
+                    )
+                    continue
+
+                if type is not None and not issubclass(config.run_cls, type):
+                    continue
+
+                if kwargs and any(
+                    getattr(config, key, None) != value
+                    for key, value in kwargs.items()
+                ):
+                    continue
+
+                keys.append(key)
+        else:
+            keys = run_docs.keys()
+
+        return sorted(keys)
+
+    @classmethod
+    def update_run_key(cls, samples, key, new_key):
+        """Replaces the key for the given run with a new key.
+
+        Args:
+            samples: a :class:`fiftyone.core.collections.SampleCollection`
+            key: a run key
+            new_key: a new run key
+        """
+        if new_key in cls.list_runs(samples):
+            raise ValueError(
+                "A %s with key '%s' already exists" % (cls._run_str(), new_key)
+            )
+
+        try:
+            # Execute rename() method
+            run_info = cls.get_run_info(samples, key)
+            run = run_info.config.build()
+            run.rename(samples, key, new_key)
+        except Exception as e:
+            logger.warning(
+                "Failed to run rename() for the %s with key '%s': %s",
+                cls._run_str(),
+                key,
+                str(e),
+            )
+
+        dataset = samples._root_dataset
+
+        # Update run doc
+        run_docs = getattr(dataset._doc, cls._runs_field())
+        run_doc = run_docs.pop(key)
+        run_doc.key = new_key
+        run_docs[new_key] = run_doc
+        run_doc.save()
+        dataset._doc.save()
+
+        # Update results cache
+        results_cache = getattr(dataset, cls._results_cache_field())
+        run_results = results_cache.pop(key, None)
+        if run_results is not None:
+            run_results._key = new_key
+            results_cache[new_key] = run_results
 
     @classmethod
     def get_run_info(cls, samples, key):
@@ -361,19 +473,25 @@ class Run(Configurable):
                     % (cls._run_str().capitalize(), key)
                 )
 
-        dataset_doc = samples._root_dataset._doc
-        run_docs = getattr(dataset_doc, cls._runs_field())
-        view_stages = [json_util.dumps(s) for s in samples.view()._serialize()]
+        dataset = samples._root_dataset
+        run_docs = getattr(dataset._doc, cls._runs_field())
 
-        run_docs[key] = RunDocument(
+        run_doc = RunDocument(
+            dataset_id=dataset._doc.id,
             key=key,
             version=run_info.version,
             timestamp=run_info.timestamp,
             config=deepcopy(run_info.config.serialize()),
-            view_stages=view_stages,
+            view_stages=[
+                json_util.dumps(s)
+                for s in samples.view()._serialize(include_uuids=False)
+            ],
             results=None,
         )
-        dataset_doc.save()
+        run_doc.save(upsert=True)
+
+        run_docs[key] = run_doc
+        dataset.save()
 
     @classmethod
     def update_run_config(cls, samples, key, config):
@@ -387,11 +505,9 @@ class Run(Configurable):
         if key is None:
             return
 
-        dataset = samples._root_dataset
-        run_docs = getattr(dataset._doc, cls._runs_field())
-        run_doc = run_docs[key]
+        run_doc = cls._get_run_doc(samples, key)
         run_doc.config = deepcopy(config.serialize())
-        dataset._doc.save()
+        run_doc.save()
 
     @classmethod
     def save_run_results(
@@ -411,8 +527,7 @@ class Run(Configurable):
             return
 
         dataset = samples._root_dataset
-        run_docs = getattr(dataset._doc, cls._runs_field())
-        run_doc = run_docs[key]
+        run_doc = cls._get_run_doc(samples, key)
 
         if run_doc.results:
             if overwrite:
@@ -437,10 +552,12 @@ class Run(Configurable):
             results_cache = getattr(dataset, cls._results_cache_field())
             results_cache[key] = run_results
 
-        dataset._doc.save()
+        run_doc.save()
 
     @classmethod
-    def load_run_results(cls, samples, key, cache=True, load_view=True):
+    def load_run_results(
+        cls, samples, key, cache=True, load_view=True, **kwargs
+    ):
         """Loads the :class:`RunResults` for the given key on the collection.
 
         Args:
@@ -449,26 +566,30 @@ class Run(Configurable):
             cache (True): whether to cache the results on the collection
             load_view (True): whether to load the run view in the results
                 (True) or the full dataset (False)
+            **kwargs: keyword arguments for the run's
+                :meth:`RunConfig.load_credentials` method
 
         Returns:
             a :class:`RunResults`, or None if the run did not save results
         """
         dataset = samples._root_dataset
 
-        results_cache = getattr(dataset, cls._results_cache_field())
+        if cache:
+            results_cache = getattr(dataset, cls._results_cache_field())
 
-        # Returned cached results if available
-        if key in results_cache:
-            return results_cache[key]
+            # Returned cached results if available
+            if key in results_cache:
+                return results_cache[key]
 
         run_doc = cls._get_run_doc(samples, key)
 
         if not run_doc.results:
             return None
 
-        # Load run info
+        # Load run config
         run_info = cls.get_run_info(samples, key)
         config = run_info.config
+        config.load_credentials(**kwargs)
 
         if load_view:
             run_samples = cls.load_run_view(samples, key)
@@ -480,7 +601,7 @@ class Run(Configurable):
         d = json_util.loads(run_doc.results.read().decode())
 
         try:
-            run_results = RunResults.from_dict(d, run_samples, config)
+            run_results = RunResults.from_dict(d, run_samples, config, key)
         except Exception as e:
             if run_doc.version == foc.VERSION:
                 raise e
@@ -506,6 +627,22 @@ class Run(Configurable):
         return run_results
 
     @classmethod
+    def has_cached_run_results(cls, samples, key):
+        """Determines whether :class:`RunResults` for the given key are cached
+        on the collection.
+
+        Args:
+            samples: a :class:`fiftyone.core.collections.SampleCollection`
+            key: a run key
+
+        Returns:
+            True/False
+        """
+        dataset = samples._root_dataset
+        results_cache = getattr(dataset, cls._results_cache_field())
+        return key in results_cache
+
+    @classmethod
     def load_run_view(cls, samples, key, select_fields=False):
         """Loads the :class:`fiftyone.core.view.DatasetView` on which the
         specified run was performed.
@@ -513,8 +650,8 @@ class Run(Configurable):
         Args:
             samples: a :class:`fiftyone.core.collections.SampleCollection`
             key: a run key
-            select_fields (False): whether to select only the fields involved
-                in the run
+            select_fields (False): whether to exclude fields involved in other
+                runs of the same type
 
         Returns:
             a :class:`fiftyone.core.view.DatasetView`
@@ -528,25 +665,24 @@ class Run(Configurable):
         if not select_fields:
             return view
 
-        #
-        # Select run fields
-        #
-
         fields = cls._get_run_fields(samples, key)
         root_fields = samples._get_root_fields(fields)
-
-        view = view.select_fields(root_fields)
-
-        #
-        # Hide any ancillary info on the same fields
-        #
 
         exclude_fields = []
         for _key in cls.list_runs(samples):
             if _key == key:
                 continue
 
-            for field in cls._get_run_fields(samples, _key):
+            _fields = cls._get_run_fields(samples, _key)
+            _root_fields = samples._get_root_fields(_fields)
+
+            # Exclude top-level fields involved in other runs
+            for field in _root_fields:
+                if field not in root_fields:
+                    exclude_fields.append(field)
+
+            # Exclude nested fields from other runs on this run's fields
+            for field in _fields:
                 if any(field.startswith(r + ".") for r in root_fields):
                     exclude_fields.append(field)
 
@@ -567,30 +703,36 @@ class Run(Configurable):
         run_doc = cls._get_run_doc(samples, key)
 
         try:
-            # Cleanup after run, if possible
+            # Execute cleanup() method
             run_info = cls.get_run_info(samples, key)
             run = run_info.config.build()
             run.cleanup(samples, key)
-        except:
+        except Exception as e:
             logger.warning(
-                "Unable to run cleanup() for the %s with key '%s'",
+                "Failed to run cleanup() for the %s with key '%s': %s",
                 cls._run_str(),
                 key,
+                str(e),
             )
 
         dataset = samples._root_dataset
 
-        # Delete run from dataset doc
+        # Delete run from dataset
         run_docs = getattr(dataset._doc, cls._runs_field())
         run_docs.pop(key, None)
         results_cache = getattr(dataset, cls._results_cache_field())
-        results_cache.pop(key, None)
+        run_results = results_cache.pop(key, None)
+        if run_results is not None:
+            run_results._key = None
 
-        # Must manually delete run result, which is stored via GridFS
-        if run_doc.results:
-            run_doc.results.delete()
+        if not isinstance(run_doc, DBRef):
+            # Must manually delete run result, which is stored via GridFS
+            if run_doc.results:
+                run_doc.results.delete()
 
-        dataset._doc.save()
+            run_doc.delete()
+
+        dataset.save()
 
     @classmethod
     def delete_runs(cls, samples):
@@ -603,9 +745,26 @@ class Run(Configurable):
             cls.delete_run(samples, key)
 
     @classmethod
+    def _get_run_docs(cls, samples):
+        dataset = samples._root_dataset
+        run_docs = {}
+        for key, run_doc in getattr(dataset._doc, cls._runs_field()).items():
+            if not isinstance(run_doc, DBRef):
+                run_docs[key] = run_doc
+            else:
+                logger.warning(
+                    "This dataset's %s references are corrupted. Run %s('%s') "
+                    "and dataset.reload() to resolve",
+                    cls._run_str(),
+                    etau.get_function_name(cls._patch_function()),
+                    dataset._doc.name,
+                )
+
+        return run_docs
+
+    @classmethod
     def _get_run_doc(cls, samples, key):
-        dataset_doc = samples._root_dataset._doc
-        run_docs = getattr(dataset_doc, cls._runs_field())
+        run_docs = cls._get_run_docs(samples)
         run_doc = run_docs.get(key, None)
         if run_doc is None:
             raise ValueError(
@@ -622,12 +781,69 @@ class Run(Configurable):
 
 
 class RunResults(etas.Serializable):
-    """Base class for storing the results of a run."""
+    """Base class for storing the results of a run.
+
+    Args:
+        samples: the :class:`fiftyone.core.collections.SampleCollection` used
+        config: the :class:`RunConfig` used
+        key: the key for the run
+        backend (None): a :class:`Run` instance. If not provided, one is
+            instantiated from ``config``
+    """
+
+    def __init__(self, samples, config, key, backend=None):
+        if backend is None and config is not None:
+            backend = config.build()
+            backend.ensure_usage_requirements()
+
+        self._samples = samples
+        self._config = config
+        self._backend = backend
+        self._key = key
 
     @property
     def cls(self):
         """The fully-qualified name of this :class:`RunResults` class."""
         return etau.get_class_name(self)
+
+    @property
+    def samples(self):
+        """The :class:`fiftyone.core.collections.SampleCollection` associated
+        with these results.
+        """
+        return self._samples
+
+    @property
+    def config(self):
+        """The :class:`RunConfig` for these results."""
+        return self._config
+
+    @property
+    def backend(self):
+        """The :class:`Run` for these results."""
+        return self._backend
+
+    @property
+    def key(self):
+        """The run key for these results."""
+        return self._key
+
+    def save(self):
+        """Saves the results to the database."""
+        # Only cache if the results are already cached
+        cache = self.backend.has_cached_run_results(self.samples, self.key)
+
+        self.backend.save_run_results(
+            self.samples,
+            self.key,
+            self,
+            overwrite=True,
+            cache=cache,
+        )
+
+    def save_config(self):
+        """Saves these results config to the database."""
+        self.backend.update_run_config(self.samples, self.key, self.config)
 
     def attributes(self):
         """Returns the list of class attributes that will be serialized by
@@ -639,7 +855,7 @@ class RunResults(etas.Serializable):
         return ["cls"] + super().attributes()
 
     @classmethod
-    def from_dict(cls, d, samples, config):
+    def from_dict(cls, d, samples, config, key):
         """Builds a :class:`RunResults` from a JSON dict representation of it.
 
         Args:
@@ -647,6 +863,7 @@ class RunResults(etas.Serializable):
             samples: the :class:`fiftyone.core.collections.SampleCollection`
                 for the run
             config: the :class:`RunConfig` for the run
+            key: the run key
 
         Returns:
             a :class:`RunResults`
@@ -655,10 +872,10 @@ class RunResults(etas.Serializable):
             return None
 
         run_results_cls = etau.get_class(d["cls"])
-        return run_results_cls._from_dict(d, samples, config)
+        return run_results_cls._from_dict(d, samples, config, key)
 
     @classmethod
-    def _from_dict(cls, d, samples, config):
+    def _from_dict(cls, d, samples, config, key):
         """Subclass implementation of :meth:`from_dict`.
 
         Args:
@@ -666,6 +883,7 @@ class RunResults(etas.Serializable):
             samples: the :class:`fiftyone.core.collections.SampleCollection`
                 for the run
             config: the :class:`RunConfig` for the run
+            key: the run key
 
         Returns:
             a :class:`RunResults`

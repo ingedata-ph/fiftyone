@@ -1,5 +1,5 @@
+import { createBrowserHistory, createMemoryHistory, Location } from "history";
 import React from "react";
-import { createBrowserHistory, createMemoryHistory } from "history";
 import { loadQuery, PreloadedQuery } from "react-relay";
 import {
   Environment,
@@ -12,8 +12,8 @@ import {
 } from "relay-runtime";
 
 import {
-  FetchFunction,
   getFetchFunction,
+  GQLError,
   GraphQLError,
   isElectron,
   isNotebook,
@@ -22,7 +22,8 @@ import {
 } from "@fiftyone/utilities";
 import RouteDefinition, { RouteBase } from "./RouteDefinition";
 
-import { MatchPathResult, matchPath } from "./matchPath";
+import { Route } from "..";
+import { matchPath, MatchPathResult } from "./matchPath";
 
 export interface RouteData<
   T extends OperationType | undefined = OperationType
@@ -35,6 +36,7 @@ export interface RouteData<
 
 export interface Entry<T extends OperationType | undefined = OperationType> {
   pathname: string;
+  queryParams: { [key: string]: string };
   state: any;
   entries: {
     component: Resource<Route<T>>;
@@ -48,6 +50,7 @@ export interface RoutingContext<
 > {
   history: ReturnType<typeof createBrowserHistory>;
   get: () => Entry<T>;
+  loaded: boolean;
   pathname: string;
   state: any;
   subscribe: (cb: (entry: Entry<T>) => void) => () => void;
@@ -62,6 +65,12 @@ export interface Router<T extends OperationType | undefined = OperationType> {
   cleanup: () => void;
   context: RoutingContext<T>;
 }
+
+let context: RoutingContext;
+
+export const getContext = () => {
+  return context;
+};
 
 export const createRouter = (
   environment: Environment,
@@ -89,9 +98,11 @@ export const createRouter = (
       routes,
       location.pathname,
       errors,
-      location.state?.variables as Partial<VariablesOf<any>>
+      location.state?.variables as Partial<VariablesOf<any>>,
+      location.search
     );
-    const entries = prepareMatches(environment, matches);
+
+    const entries = prepareMatches(location, environment, matches);
     const nextEntry: Entry<any> = {
       pathname: location.pathname,
       state: location.state,
@@ -101,25 +112,31 @@ export const createRouter = (
     subscribers.forEach((cb) => cb(nextEntry));
   });
 
-  const context: RoutingContext = {
+  context = {
     history,
     get() {
       if (!currentEntry) {
         currentEntry = {
           pathname: history.location.pathname,
+
           state: history.location.state,
           entries: prepareMatches(
+            history.location,
             environment,
             matchRoute(
               routes,
               history.location.pathname,
               errors,
-              history.location.state?.variables as Partial<VariablesOf<any>>
+              history.location.state?.variables as Partial<VariablesOf<any>>,
+              history.location.search
             )
           ),
         };
       }
       return currentEntry;
+    },
+    get loaded() {
+      return Boolean(currentEntry);
     },
     get pathname() {
       return history.location.pathname;
@@ -149,11 +166,12 @@ export const matchRoutes = <
   routes: RouteBase<T>[],
   pathname: string,
   variables: T extends OperationType ? Partial<VariablesOf<T>> : undefined,
-  branch: { route: RouteBase<T>; match: MatchPathResult<T> }[] = []
+  branch: { route: RouteBase<T>; match: MatchPathResult<T> }[] = [],
+  search: string
 ): { route: RouteBase<T>; match: MatchPathResult<T> }[] => {
   routes.some((route) => {
     const match = route.path
-      ? matchPath(pathname, route, variables)
+      ? matchPath(pathname, route, variables, search)
       : branch.length
       ? branch[branch.length - 1].match
       : ({
@@ -167,7 +185,7 @@ export const matchRoutes = <
       branch.push({ route, match });
 
       if (route.children) {
-        matchRoutes(route.children, pathname, variables, branch);
+        matchRoutes(route.children, pathname, variables, branch, search);
       }
     }
 
@@ -181,22 +199,24 @@ const matchRoute = <T extends OperationType | undefined = OperationType>(
   routes: RouteDefinition<T>[],
   pathname: string,
   errors: boolean,
-  variables: T extends OperationType ? Partial<VariablesOf<T>> : undefined
+  variables: T extends OperationType ? Partial<VariablesOf<T>> : undefined,
+  search: string
 ): Match<T>[] => {
-  const matchedRoutes = matchRoutes(routes, pathname, variables);
+  const matchedRoutes = matchRoutes(routes, pathname, variables, [], search);
 
   if (
     errors &&
     matchedRoutes &&
     matchedRoutes.every(({ match }) => !match.isExact)
   ) {
-    throw new NotFoundError(pathname);
+    throw new NotFoundError({ path: pathname });
   }
 
   return matchedRoutes;
 };
 
 const prepareMatches = <T extends OperationType | undefined = OperationType>(
+  location: Location,
   environment: Environment,
   matches: Match<T>[]
 ) => {
@@ -218,6 +238,16 @@ const prepareMatches = <T extends OperationType | undefined = OperationType>(
         if (routeQuery !== undefined) {
           const prepared = new Resource(() =>
             routeQuery.load().then((q) => {
+              if (
+                q.operation.name === "DatasetQuery" &&
+                location.state?.selectedFieldsStage
+              ) {
+                matchData.variables.view = [
+                  ...(matchData.variables.view || []),
+                  location.state?.selectedFieldsStage,
+                ];
+              }
+
               return loadQuery(environment, q, matchData.variables || {}, {
                 fetchPolicy: "network-only",
               });
@@ -255,12 +285,16 @@ async function fetchGraphQL(
   );
 
   if ("errors" in data && data.errors) {
-    throw new GraphQLError(data.errors as unknown as GraphQLError[]);
+    console.error(data);
+    throw new GraphQLError({
+      errors: data.errors as GQLError[],
+      variables,
+    });
   }
   return data;
 }
 
-const fetchRelay: FetchFunction = async (params, variables) => {
+const fetchRelay = async (params, variables) => {
   return fetchGraphQL(params.text, variables);
 };
 
@@ -270,6 +304,10 @@ export const getEnvironment = () =>
     store: new Store(new RecordSource()),
   });
 
-export const RouterContext = React.createContext(
-  createRouter(getEnvironment(), [], { errors: false }).context
-);
+export let RouterContext: React.Context<RoutingContext<any>> = null;
+
+if (typeof window !== "undefined") {
+  RouterContext = React.createContext(
+    createRouter(getEnvironment(), [], { errors: false }).context
+  );
+}

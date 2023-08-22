@@ -203,7 +203,7 @@ Configuring your backend
 
 Annotation backends may be configured in a variety of backend-specific ways,
 which you can see by inspecting the parameters of a backend's associated
-|AnnotationBackendConfig| clas.
+|AnnotationBackendConfig| class.
 
 The relevant classes for the builtin annotation backends are:
 
@@ -403,7 +403,8 @@ The `anno_key` argument defines a unique identifier for the annotation run, and
 you will provide it to methods like
 :meth:`load_annotations() <fiftyone.core.collections.SampleCollection.load_annotations>`,
 :meth:`get_annotation_info() <fiftyone.core.collections.SampleCollection.load_annotations>`,
-:meth:`load_annotation_results() <fiftyone.core.collections.SampleCollection.load_annotation_results>`, and
+:meth:`load_annotation_results() <fiftyone.core.collections.SampleCollection.load_annotation_results>`,
+:meth:`rename_annotation_run() <fiftyone.core.collections.SampleCollection.rename_annotation_run>`, and
 :meth:`delete_annotation_run() <fiftyone.core.collections.SampleCollection.delete_annotation_run>`
 to manage the run in the future.
 
@@ -926,6 +927,8 @@ supported values are:
 
 -   `"prompt"` (**default**): present an interactive prompt to direct/discard
     unexpected labels
+-   ``"keep"``: automatically keep all unexpected labels in a field whose name
+    matches the the label type
 -   `"ignore"`: automatically ignore any unexpected labels
 -   `"return"`: return a dict containing all unexpected labels, if any
 
@@ -974,6 +977,15 @@ In addition, the
 :class:`AnnotationResults <fiftyone.utils.annotations.AnnotationResults>`
 subclasses for each backend may provide additional utilities such as support
 for programmatically monitoring the status of the annotation tasks in the run.
+
+You can use
+:meth:`rename_annotation_run() <fiftyone.core.collections.SampleCollection.rename_annotation_run>`
+to rename the annotation key associated with an existing annotation run:
+
+.. code:: python
+    :linenos:
+
+    dataset.rename_annotation_run(anno_key, new_anno_key)
 
 Finally, you can use
 :meth:`delete_annotation_run() <fiftyone.core.collections.SampleCollection.delete_annotation_run>`

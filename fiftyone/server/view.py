@@ -1,10 +1,16 @@
 """
-FiftyOne Server view
+FiftyOne Server view.
 
-| Copyright 2017-2022, Voxel51, Inc.
+| Copyright 2017-2023, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
+from typing import List, Optional
+
+from bson import ObjectId
+import strawberry as gql
+
+import fiftyone.core.collections as foc
 import fiftyone.core.dataset as fod
 from fiftyone.core.expressions import ViewField as F, VALUE
 import fiftyone.core.fields as fof
@@ -14,67 +20,128 @@ import fiftyone.core.stages as fosg
 import fiftyone.core.utils as fou
 import fiftyone.core.view as fov
 
-from fiftyone.server.utils import iter_label_fields
+from fiftyone.server.aggregations import GroupElementFilter, SampleFilter
+from fiftyone.server.scalars import BSONArray, JSON
 
 
 _LABEL_TAGS = "_label_tags"
 
 
+@gql.input
+class ExtendedViewForm:
+    filters: Optional[JSON] = None
+    mixed: Optional[bool] = None
+    sample_ids: Optional[List[str]] = None
+    slice: Optional[str] = None
+
+
+async def load_view(
+    dataset_name: str,
+    serialized_view: BSONArray,
+    form: ExtendedViewForm,
+    view_name: Optional[str] = None,
+) -> foc.SampleCollection:
+    def run() -> foc.SampleCollection:
+        dataset = fod.load_dataset(dataset_name)
+        if view_name:
+            view = dataset.load_saved_view(view_name)
+            if serialized_view:
+                for stage in serialized_view:
+                    view.add_stage(fosg.ViewStage._from_dict(stage))
+        else:
+            view = get_view(
+                dataset_name,
+                stages=serialized_view,
+                filters=form.filters,
+                sample_filter=SampleFilter(
+                    group=GroupElementFilter(
+                        slices=[form.slice] if form.slice else None
+                    )
+                ),
+            )
+
+            if form.sample_ids:
+                view = fov.make_optimized_select_view(view, form.sample_ids)
+
+            if form.mixed and view.media_type == fom.GROUP:
+                view = view.select_group_slices(_force_mixed=True)
+
+            return view
+
+    return await fou.run_sync_task(run)
+
+
 def get_view(
     dataset_name,
+    view_name=None,
     stages=None,
     filters=None,
-    count_label_tags=False,
-    only_matches=True,
+    pagination_data=False,
     extended_stages=None,
     sample_filter=None,
-    sort=False,
+    reload=True,
 ):
-    """Get the view from request paramters
+    """Gets the view defined by the given request parameters.
 
     Args:
-        dataset_names: the dataset name
+        dataset_name: the dataset name
+        view_name (None): the name of a saved view to load
         stages (None): an optional list of serialized
             :class:`fiftyone.core.stages.ViewStage` instances
         filters (None): an optional ``dict`` of App defined filters
-        extended_stages (None): extended view stages
-        count_label_tags (False): whether to set the hidden ``_label_tags``
-            field with counts of tags with respect to all label fields
+        pagination_data (False): whether process samples as pagination data
+            - excludes all :class:`fiftyone.core.fields.DictField` values
+            - filters label fields
         only_matches (True): whether to filter unmatches samples when filtering
             labels
+        extended_stages (None): extended view stages
         sample_filter (None): an optional
             :class:`fiftyone.server.filters.SampleFilter`
-        sort (False): whether to include sort extended stages
+        reload (None): whether to reload the dataset
 
     Returns:
         a :class:`fiftyone.core.view.DatasetView`
     """
-    view = fod.load_dataset(dataset_name).view()
-    view.reload()
+    dataset = fod.load_dataset(dataset_name)
+
+    if reload:
+        dataset.reload()
+
+    if view_name is not None:
+        return dataset.load_saved_view(view_name)
 
     if stages:
-        view = fov.DatasetView._build(view, stages)
+        view = fov.DatasetView._build(dataset, stages)
+    else:
+        view = dataset.view()
 
     if sample_filter is not None:
         if sample_filter.group:
+            if sample_filter.group.slice:
+                view.group_slice = sample_filter.group.slice
+
             if sample_filter.group.id:
                 view = fov.make_optimized_select_view(
                     view, sample_filter.group.id, groups=True
                 )
-            if sample_filter.group.slice:
-                view.group_slice = sample_filter.group.slice
+            if sample_filter.group.slices:
+                view = view.select_group_slices(
+                    sample_filter.group.slices, _force_mixed=True
+                )
 
         elif sample_filter.id:
             view = fov.make_optimized_select_view(view, sample_filter.id)
 
-    if filters or extended_stages or count_label_tags:
+    if pagination_data:
+        # omit all dict field values for performance, not needed by grid
+        view = _project_pagination_paths(view)
+
+    if filters or extended_stages or pagination_data:
         view = get_extended_view(
             view,
             filters,
-            count_label_tags=count_label_tags,
-            only_matches=only_matches,
+            pagination_data=pagination_data,
             extended_stages=extended_stages,
-            sort=sort,
         )
 
     return view
@@ -83,82 +150,78 @@ def get_view(
 def get_extended_view(
     view,
     filters=None,
-    count_label_tags=False,
-    only_matches=True,
     extended_stages=None,
-    sort=False,
+    pagination_data=False,
 ):
     """Create an extended view with the provided filters.
 
     Args:
         view: a :class:`fiftyone.core.collections.SampleCollection`
         filters: an optional ``dict`` of App defined filters
-        count_label_tags (False): whether to set the hidden ``_label_tags``
-            field with counts of tags with respect to all label fields
-        only_matches (True): whether to filter unmatches samples when filtering
-            labels
         extended_stages (None): extended view stages
-        sort (False): wheter to include sort extended stages
-    """
-    cleanup_fields = set()
-    filtered_labels = set()
+        pagination_data (False): filters label data
 
+    Returns:
+        a :class:`fiftyone.core.view.DatasetView`
+    """
     label_tags = None
-    if filters is not None and len(filters):
+
+    if extended_stages:
+        view = extend_view(view, extended_stages)
+
+    if filters:
         if "tags" in filters:
             tags = filters.get("tags")
-            if "label" in tags:
-                label_tags = tags["label"]
+            exclude = tags["exclude"]
+            tags = tags["values"]
 
-            if not count_label_tags and label_tags:
-                view = view.select_labels(tags=label_tags)
+            if tags and not exclude:
+                view = view.match_tags(tags)
 
-            if "sample" in tags:
-                view = view.match_tags(tags=tags["sample"])
+            if tags and exclude:
+                view = view.match_tags(tags, bool=False)
 
-        stages, cleanup_fields, filtered_labels = _make_filter_stages(
-            view,
-            filters,
-            label_tags=label_tags,
-            hide_result=count_label_tags,
-            only_matches=only_matches,
-        )
+        label_tags = filters.get(_LABEL_TAGS, None)
+        if label_tags:
+            view = _match_label_tags(view, label_tags)
+
+        stages = _make_filter_stages(view, filters)
 
         for stage in stages:
             view = view.add_stage(stage)
 
-    if extended_stages:
-        view = extend_view(view, extended_stages, sort)
-
-    if count_label_tags:
-        view = _add_labels_tags_counts(view, filtered_labels, label_tags)
-        if cleanup_fields:
-            view = view.mongo([{"$unset": field} for field in cleanup_fields])
+    if pagination_data:
+        view = _add_labels_tags_counts(view)
 
     return view
 
 
-def extend_view(view, extended_stages, sort):
-    for cls, d in extended_stages.items():
+def extend_view(view, extended_stages):
+    """Adds the given extended stages to the view.
+
+    Args:
+        view: a :class:`fiftyone.core.collections.SampleCollection`
+        extended_stages: an extended stages dict
+
+    Returns:
+        a :class:`fiftyone.core.view.DatasetView`
+    """
+    for _cls, d in extended_stages.items():
         kwargs = [[k, v] for k, v in d.items()]
-        stage = fosg.ViewStage._from_dict({"_cls": cls, "kwargs": kwargs})
-        if sort or not isinstance(stage, (fosg.SortBySimilarity, fosg.SortBy)):
-            view = view.add_stage(stage)
+        stage = fosg.ViewStage._from_dict({"_cls": _cls, "kwargs": kwargs})
+        view = view.add_stage(stage)
 
     return view
 
 
-def _add_labels_tags_counts(view, filtered_fields, label_tags):
+def _add_labels_tags_counts(view):
     view = view.set_field(_LABEL_TAGS, [], _allow_missing=True)
 
-    for path, field in iter_label_fields(view):
-        if not issubclass(
-            field.document_type, (fol._HasID, fol._HasLabelList)
+    for path, field in foc._iter_label_fields(view):
+        if isinstance(field, fof.ListField) or (
+            isinstance(field, fof.EmbeddedDocumentField)
+            and issubclass(field.document_type, fol._HasLabelList)
         ):
-            continue
-
-        path = _get_filtered_path(view, path, filtered_fields, label_tags)
-        if issubclass(field.document_type, fol._HasLabelList):
             if path.startswith(view._FRAMES_PREFIX):
                 add_tags = _add_frame_labels_tags
             else:
@@ -176,157 +239,109 @@ def _add_labels_tags_counts(view, filtered_fields, label_tags):
     return view
 
 
-def _make_expression(field, path, args):
-    if not path:
-        return _make_scalar_expression(F(), args, field)
-
-    keys = path.split(".")
-    rest = ".".join(keys[1:])
-    field = field.get_field_schema()[keys[0]]
-    if isinstance(field, fof.ListField) and not isinstance(
-        field, fof.FrameSupportField
-    ):
-        new_field = field.field
-        expr = (
-            lambda subexpr: F(field.db_field or field.name)
-            .filter(subexpr)
-            .length()
-            > 0
+def _project_pagination_paths(view: foc.SampleCollection):
+    schema = view.get_field_schema(flat=True)
+    frame_schema = view.get_frame_field_schema(flat=True)
+    if frame_schema:
+        schema.update(
+            **{f"frames.{path}": field for path, field in frame_schema.items()}
         )
-    else:
-        new_field = field
-        expr = lambda subexpr: F(field.db_field or field.name).apply(subexpr)
 
-    subexpr = _make_expression(new_field, rest, args)
-    if subexpr is not None:
-        return expr(subexpr)
+    excluded = [
+        path
+        for path, field in schema.items()
+        if isinstance(field, fof.DictField)
+    ]
 
-    return None
+    return view.select_fields(
+        [
+            path
+            for path in schema
+            if all(not path.startswith(exclude) for exclude in excluded)
+        ]
+    )
 
 
 def _make_filter_stages(
-    view, filters, label_tags=None, hide_result=False, only_matches=True
+    view,
+    filters,
 ):
-    field_schema = view.get_field_schema()
-    if view.media_type != fom.IMAGE:
-        frame_field_schema = view.get_frame_field_schema()
-    else:
-        frame_field_schema = None
-
-    tag_expr = (F("tags") != None).if_else(
-        F("tags").contains(label_tags), None
-    )
-    cache = {}
-
     stages = []
-    cleanup = set()
-    filtered_labels = set()
+    queries = []
+    for path, label_path, field, args in _iter_paths(view, filters):
+        is_matching = args.get("isMatching", True)
+        path_field = view.get_field(path)
+        is_label_field = _is_label(field)
+        if (
+            is_label_field
+            and issubclass(field.document_type, (fol.Keypoint, fol.Keypoints))
+            and isinstance(path_field, (fof.KeypointsField, fof.ListField))
+        ):
+            continue
+
+        if args.get("exclude") and not is_matching:
+            continue
+
+        queries.append(_make_query(path, path_field, args))
+
+    if queries:
+        stages.append(fosg.Match({"$and": queries}))
+
+    for path, label_path, label_field, args in _iter_paths(
+        view, filters, labels=True
+    ):
+        is_matching = args.get("isMatching", True)
+        field = view.get_field(path)
+        if issubclass(
+            label_field.document_type, (fol.Keypoint, fol.Keypoints)
+        ) and isinstance(field, fof.ListField):
+            expr = _make_keypoint_list_filter(args, view, path, field)
+            if expr is not None:
+                stages.append(
+                    fosg.FilterKeypoints(
+                        label_path,
+                        only_matches=True,
+                        **expr,
+                    )
+                )
+
+        elif not is_matching:
+            key = field.db_field if field.db_field else field.name
+            expr = _make_scalar_expression(F(key), args, field, is_label=True)
+            if expr is not None:
+                stages.append(
+                    fosg.FilterLabels(
+                        label_path,
+                        expr,
+                        only_matches=not args.get("exclude", False),
+                    )
+                )
+
+    return stages
+
+
+def _iter_paths(view, filters, labels=False):
     for path in sorted(filters):
-        args = filters[path]
         if path == "tags" or path.startswith("_"):
             continue
 
-        frames = path.startswith(view._FRAMES_PREFIX)
-        keys = path.split(".")
-        if frames:
-            field = frame_field_schema[keys[1]]
-            keys = keys[2:]
-            prefix = "frames."
+        if "." in path:
+            parent_path = ".".join(path.split(".")[:-1])
         else:
-            field = field_schema[keys[0]]
-            keys = keys[1:]
-            prefix = ""
+            parent_path = path
 
-        if _is_label(field):
-            keypoints = issubclass(
-                field.document_type, (fol.Keypoint, fol.Keypoints)
-            )
+        parent_field = view.get_field(parent_path)
+        if isinstance(parent_field, fof.ListField) and isinstance(
+            parent_field.field, fof.EmbeddedDocumentField
+        ):
+            if issubclass(parent_field.field.document_type, fol.Label):
+                parent_path = ".".join(parent_path.split(".")[:-1])
+                parent_field = view.get_field(parent_path)
 
-            if keypoints:
-                if path.endswith(".id") or path.endswith(".label"):
-                    keypoints = False
+        if labels and not _is_label(parent_field):
+            continue
 
-            parent = field
-            field = view.get_field(path)
-            key = field.db_field if field.db_field else field.name
-            view_field = F(key)
-            expr = (
-                _make_keypoint_kwargs(
-                    args,
-                    view,
-                    path if path.endswith(".points") else None,
-                )
-                if keypoints
-                else _make_scalar_expression(view_field, args, field)
-            )
-            if expr is not None:
-                if hide_result:
-                    new_field = "__%s" % path.split(".")[1 if frames else 0]
-                    if frames:
-                        new_field = "%s%s" % (
-                            view._FRAMES_PREFIX,
-                            new_field,
-                        )
-                else:
-                    new_field = None
-
-                if keypoints:
-                    stage = fosg.FilterKeypoints(
-                        prefix + parent.name,
-                        _new_field=new_field,
-                        **expr,
-                    )
-                else:
-                    stage = fosg.FilterLabels(
-                        cache.get(prefix + parent.name, prefix + parent.name),
-                        expr,
-                        only_matches=only_matches,
-                        _new_field=new_field,
-                    )
-
-                stages.append(stage)
-                filtered_labels.add(path)
-                if new_field:
-                    cache[prefix + parent.name] = new_field
-                    cleanup.add(new_field)
-        else:
-            expr = _make_expression(view, path, args)
-            if expr is not None:
-                stages.append(fosg.Match(expr))
-
-    if label_tags is not None and hide_result:
-        for path, _ in iter_label_fields(view):
-            if hide_result:
-                new_field = _get_filtered_path(
-                    view, path, filtered_labels, label_tags
-                )
-            else:
-                new_field = None
-
-            stages.append(
-                fosg.FilterLabels(
-                    cache.get(path, path),
-                    tag_expr,
-                    only_matches=False,
-                    _new_field=new_field,
-                )
-            )
-            if new_field:
-                cache[path] = new_field
-                cleanup.add(new_field)
-
-        match_exprs = []
-        for path, _ in iter_label_fields(view):
-            match_exprs.append(
-                fosg._get_label_field_only_matches_expr(
-                    view,
-                    cache.get(path, path),
-                )
-            )
-
-        stages.append(fosg.Match(F.any(match_exprs)))
-
-    return stages, cleanup, filtered_labels
+        yield path, parent_path, parent_field, filters[path]
 
 
 def _is_support(field):
@@ -353,15 +368,74 @@ def _is_label(field):
     )
 
 
-def _make_scalar_expression(f, args, field):
-    expr = None
-    if isinstance(field, fof.ListField):
-        return (
-            f.filter(_make_scalar_expression(F(), args, field.field)).length()
-            > 0
-        )
+def _make_query(path, field, args):
+    keys = path.split(".")
+    path = ".".join(keys[:-1] + [field.db_field or field.name])
+    if isinstance(field, fof.ListField) and field.field:
+        field = field.field
+
+    if isinstance(
+        field,
+        (fof.DateField, fof.DateTimeField, fof.FloatField, fof.IntField),
+    ):
+        mn, mx = args["range"]
+        if isinstance(field, (fof.DateField, fof.DateTimeField)):
+            mn, mx = [fou.timestamp_to_datetime(d) for d in args["range"]]
+
+        if args["exclude"]:
+            return {
+                "$or": [
+                    {path: {"$lt": mn}},
+                    {path: {"$gt": mx}},
+                ]
+            }
+
+        return {
+            "$and": [
+                {path: {"$gte": mn}},
+                {path: {"$lte": mx}},
+            ]
+        }
+
+    values = args.get("values", None)
+    if isinstance(field, fof.ObjectIdField):
+        values = list(map(lambda v: ObjectId(v), args["values"]))
+
+    if isinstance(field, (fof.ObjectIdField, fof.StringField)):
+        return {path: {"$nin" if args["exclude"] else "$in": values}}
 
     if isinstance(field, fof.BooleanField):
+        true, false = args["true"], args["false"]
+        if true and false:
+            return {
+                path: {"$nin" if args["exclude"] else "$in": [True, False]}
+            }
+
+        if not true and false:
+            return {path: {"$ne" if args["exclude"] else "$eq": False}}
+
+        if true and not false:
+            return {path: {"$ne" if args["exclude"] else "$eq": True}}
+
+        if not true and not false:
+            return {
+                path: {"$in" if args["exclude"] else "$nin": [True, False]}
+            }
+
+    raise ValueError("unexpected filter")
+
+
+def _make_scalar_expression(f, args, field, list_field=False, is_label=False):
+    expr = None
+    if _is_support(field):
+        mn, mx = args["range"]
+        expr = (f[0] >= mn) & (f[1] <= mx)
+    elif isinstance(field, fof.ListField):
+        expr = f.filter(
+            _make_scalar_expression(F(), args, field.field, list_field=True)
+        ).length()
+        return expr == 0 if args["exclude"] else expr > 0
+    elif isinstance(field, fof.BooleanField):
         true, false = args["true"], args["false"]
         if true and false:
             expr = f.is_in([True, False])
@@ -374,10 +448,6 @@ def _make_scalar_expression(f, args, field):
 
         if not true and not false:
             expr = (f != True) & (f != False)
-
-    elif _is_support(field):
-        mn, mx = args["range"]
-        expr = (f[0] >= mn) & (f[1] <= mx)
     elif _is_datetime(field):
         mn, mx = args["range"]
         p = fou.timestamp_to_datetime
@@ -402,7 +472,7 @@ def _make_scalar_expression(f, args, field):
             # pylint: disable=invalid-unary-operand-type
             expr = ~expr
 
-        if none:
+        if none and not is_label and not list_field:
             if exclude:
                 expr &= f.exists()
             else:
@@ -410,29 +480,66 @@ def _make_scalar_expression(f, args, field):
 
         return expr
 
-    return _apply_others(expr, f, args)
+    return _apply_others(expr, f, args, is_label)
 
 
-def _make_keypoint_kwargs(args, view, points):
-    if points:
-        ske = view._dataset.default_skeleton
-        name = points.split(".")[0]
+def _make_keypoint_list_filter(args, view, path, field):
+    name = path.split(".", 1)[0]
 
-        if name in view._dataset.skeletons:
-            ske = view._dataset.skeletons[name]
+    if path.endswith(".points"):
+        dataset = view._dataset
+        if name in dataset.skeletons:
+            skeleton = dataset.skeletons[name]
+        else:
+            skeleton = dataset.default_skeleton
 
         values = args.get("values", [])
         if args["exclude"]:
-            values = set(ske.labels).difference(values)
+            values = list(set(skeleton.labels).difference(values))
 
         return {"labels": values}
 
-    f = F("confidence")
-    mn, mx = args["range"]
-    return {"filter": (f >= mn) & (f <= mx)}
+    if isinstance(field.field, fof.BooleanField):
+        true, false = args["true"], args["false"]
+        f = F(name)
+        if true and false:
+            expr = f.is_in([True, False])
+
+        if not true and false:
+            expr = f == False
+
+        if true and not false:
+            expr = f == True
+
+        if not true and not false:
+            expr = (f != True) & (f != False)
+
+        return {"filter": expr}
+
+    if isinstance(field.field, (fof.FloatField, fof.IntField)):
+        f = F(name)
+        mn, mx = args["range"]
+        expr = (f >= mn) & (f <= mx)
+        if args["exclude"]:
+            expr = ~expr
+
+        return {"filter": expr}
+
+    if isinstance(field.field, (fof.StringField)):
+        f = F(name)
+        if "values" in args:
+            val = args["values"]
+            expr = f.is_in(val)
+            if args["exclude"]:
+                expr = ~expr
+
+            return {"filter": expr}
+
+    raise ValueError(f"Filtering {field} keypoint fields is not supported")
 
 
-def _apply_others(expr, f, args):
+def _apply_others(expr, f, args, is_label):
+    is_matching = args.get("isMatching", False)
     nonfinites = {
         "nan": float("nan"),
         "ninf": -float("inf"),
@@ -451,8 +558,11 @@ def _apply_others(expr, f, args):
     if "none" in args:
         expr = _apply_none(expr, f, args["none"])
 
-    if "exclude" in args and args["exclude"]:
-        # pylint: disable=invalid-unary-operand-type
+    if (
+        "exclude" in args
+        and args["exclude"]
+        and not (is_matching and is_label)
+    ):
         expr = ~expr
 
     return expr
@@ -470,24 +580,22 @@ def _apply_none(expr, f, none):
     return expr
 
 
-def _get_filtered_path(view, path, filtered_fields, label_tags):
-    if path not in filtered_fields and not label_tags:
-        return path
-
-    if path.startswith(view._FRAMES_PREFIX):
-        return "%s__%s" % (view._FRAMES_PREFIX, path.split(".")[1])
-
-    return "__%s" % path
-
-
 def _add_frame_labels_tags(path, field, view):
-    frames, path = path.split(".")
-    items = "%s.%s" % (path, field.document_type._LABEL_LIST_FIELD)
+    path = path[len("frames.") :]
+    items = path
+    if isinstance(field, fof.ListField):
+        field = field.field
+
+    if issubclass(field.document_type, fol._HasLabelList):
+        items = "%s.%s" % (path, field.document_type._LABEL_LIST_FIELD)
+
+    reduce = F(items).reduce(VALUE.extend(F("tags")), [])
     view = view.set_field(
         _LABEL_TAGS,
         F(_LABEL_TAGS).extend(
-            F(frames).reduce(
-                VALUE.extend(F(items).reduce(VALUE.extend(F("tags")), [])), []
+            F("frames").reduce(
+                VALUE.extend(F(items).exists().if_else(reduce, [])),
+                [],
             )
         ),
         _allow_missing=True,
@@ -496,12 +604,12 @@ def _add_frame_labels_tags(path, field, view):
 
 
 def _add_frame_label_tags(path, field, view):
-    frames, path = path.split(".")
+    path = path[len("frames.") :]
     tags = "%s.tags" % path
     view = view.set_field(
         _LABEL_TAGS,
         F(_LABEL_TAGS).extend(
-            F(frames).reduce(
+            F("frames").reduce(
                 VALUE.extend((F(tags) != None).if_else(F(tags), [])), []
             )
         ),
@@ -511,10 +619,23 @@ def _add_frame_label_tags(path, field, view):
 
 
 def _add_labels_tags(path, field, view):
-    items = "%s.%s" % (path, field.document_type._LABEL_LIST_FIELD)
+    items = path
+    if isinstance(field, fof.ListField):
+        field = field.field
+
+    if issubclass(field.document_type, fol._HasLabelList):
+        items = "%s.%s" % (path, field.document_type._LABEL_LIST_FIELD)
+
     view = view.set_field(
         _LABEL_TAGS,
-        F(_LABEL_TAGS).extend(F(items).reduce(VALUE.extend(F("tags")), [])),
+        F(path)
+        .exists()
+        .if_else(
+            F(_LABEL_TAGS).extend(
+                F(items).reduce(VALUE.extend(F("tags")), [])
+            ),
+            F(_LABEL_TAGS),
+        ),
         _allow_missing=True,
     )
     return view
@@ -543,3 +664,45 @@ def _count_list_items(path, view):
     return view.set_field(
         path, F(path)._function(function), _allow_missing=True
     )
+
+
+def _match_label_tags(view: foc.SampleCollection, label_tags):
+    label_paths = [
+        f"{path}.{field.document_type._LABEL_LIST_FIELD}"
+        if isinstance(field, fof.EmbeddedDocumentField)
+        and issubclass(field.document_type, fol._HasLabelList)
+        else path
+        for path, field in foc._iter_label_fields(view)
+    ]
+    values = label_tags["values"]
+    exclude = label_tags["exclude"]
+    matching = label_tags["isMatching"]
+    expr = lambda exclude, values: {"$nin" if exclude else "$in": values}
+
+    if not exclude or matching:
+        view = view.mongo(
+            [
+                {
+                    "$match": {
+                        "$or": [
+                            {f"{path}.tags": expr(exclude, values)}
+                            for path in label_paths
+                        ]
+                    }
+                }
+            ]
+        )
+
+    if not matching and exclude:
+        view = view.exclude_labels(
+            tags=label_tags["values"],
+            omit_empty=False,
+            fields=view._get_label_fields(),
+        )
+    elif not matching:
+        view = view.select_labels(
+            tags=label_tags["values"],
+            fields=view._get_label_fields(),
+        )
+
+    return view

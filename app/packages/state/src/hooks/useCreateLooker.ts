@@ -1,33 +1,38 @@
-import { FrameLooker, ImageLooker, VideoLooker } from "@fiftyone/looker";
+import {
+  AbstractLooker,
+  FrameLooker,
+  ImageLooker,
+  PcdLooker,
+  Sample,
+  VideoLooker,
+} from "@fiftyone/looker";
 import {
   EMBEDDED_DOCUMENT_FIELD,
-  getMimeType,
   LIST_FIELD,
+  getMimeType,
 } from "@fiftyone/utilities";
 import { useCallback, useRef } from "react";
 import { useErrorHandler } from "react-error-boundary";
 import { useRecoilValue } from "recoil";
-import { mainGroupSample, selectedMediaField } from "../recoil";
-
-import { selectedSamples, SampleData } from "../recoil/atoms";
+import { ModalSample, selectedMediaField } from "../recoil";
+import { selectedSamples } from "../recoil/atoms";
 import * as schemaAtoms from "../recoil/schema";
 import { datasetName } from "../recoil/selectors";
 import { State } from "../recoil/types";
 import { getSampleSrc } from "../recoil/utils";
 import * as viewAtoms from "../recoil/view";
 
-export default <T extends FrameLooker | ImageLooker | VideoLooker>(
+export default <T extends AbstractLooker>(
   isModal: boolean,
   thumbnail: boolean,
-  options: Omit<ReturnType<T["getDefaultOptions"]>, "selected">,
-  highlight: boolean = false
+  options: Omit<Parameters<T["updateOptions"]>[0], "selected">,
+  highlight?: (sample: Sample) => boolean
 ) => {
   const selected = useRecoilValue(selectedSamples);
   const isClip = useRecoilValue(viewAtoms.isClipsView);
   const isFrame = useRecoilValue(viewAtoms.isFramesView);
   const isPatch = useRecoilValue(viewAtoms.isPatchesView);
   const handleError = useErrorHandler();
-  const activeId = isModal ? useRecoilValue(mainGroupSample)._id : null;
 
   const view = useRecoilValue(viewAtoms.view);
   const dataset = useRecoilValue(datasetName);
@@ -41,21 +46,67 @@ export default <T extends FrameLooker | ImageLooker | VideoLooker>(
   );
 
   const create = useCallback(
-    ({ frameNumber, frameRate, sample, urls }: SampleData): T => {
-      const video = getMimeType(sample).startsWith("video/");
+    ({
+      frameNumber,
+      frameRate,
+      sample,
+      urls: rawUrls,
+    }: ModalSample["sample"]): T => {
       let constructor:
         | typeof FrameLooker
         | typeof ImageLooker
+        | typeof PcdLooker
         | typeof VideoLooker = ImageLooker;
-      if (video && (isFrame || isPatch)) {
-        constructor = FrameLooker;
+
+      const mimeType = getMimeType(sample);
+
+      let urls: { [key: string]: string } = {};
+
+      // sometimes the urls are an array of objects, sometimes they are just an object
+      // this is a workaround to make sure we can handle both cases
+      // todo: investigate why this is the case
+      if (Array.isArray(rawUrls)) {
+        for (const { field, url } of rawUrls) {
+          urls[field] = url;
+        }
+      } else {
+        urls = rawUrls;
       }
 
-      if (video) {
-        constructor = VideoLooker;
+      // checking for pcd extension instead of media_type because this also applies for group slices
+      // split("?")[0] is to remove query params, if any, from signed urls
+      if (urls.filepath?.split("?")[0].endsWith(".pcd")) {
+        constructor = PcdLooker;
+      } else if (mimeType !== null) {
+        const isVideo = mimeType.startsWith("video/");
+
+        if (isVideo && (isFrame || isPatch)) {
+          constructor = FrameLooker;
+        }
+
+        if (isVideo) {
+          constructor = VideoLooker;
+        }
+      } else {
+        constructor = ImageLooker;
       }
 
-      const config: ReturnType<T["getInitialState"]>["config"] = {
+      let sampleMediaFilePath = urls[mediaField];
+
+      if (constructor === PcdLooker) {
+        const orthographicProjectionField = Object.entries(sample)
+          .find(
+            (el) => el[1] && el[1]["_cls"] === "OrthographicProjectionMetadata"
+          )
+          ?.at(0) as string | undefined;
+        if (orthographicProjectionField) {
+          sampleMediaFilePath = urls[
+            `${orthographicProjectionField}.filepath`
+          ] as string;
+        }
+      }
+
+      const config: ConstructorParameters<T>[1] = {
         fieldSchema: {
           ...fieldSchema,
           frames: {
@@ -67,21 +118,29 @@ export default <T extends FrameLooker | ImageLooker | VideoLooker>(
             dbField: null,
           },
         },
+        sources: urls,
         frameNumber: constructor === FrameLooker ? frameNumber : undefined,
         frameRate,
         sampleId: sample._id,
-        src: getSampleSrc(urls[mediaField]),
-        support: isClip ? sample.support : undefined,
+        src: getSampleSrc(sampleMediaFilePath),
+        support: isClip ? sample["support"] : undefined,
         thumbnail,
         dataset,
         view,
       };
 
+      if (sample.group?.name) {
+        config.group = {
+          name: sample.group.name,
+          id: sample.group._id,
+        };
+      }
+
       const looker = new constructor(sample, config, {
         ...options,
         selected: selected.has(sample._id),
-        highlight: highlight && sample._id === activeId,
-      }) as T;
+        highlight: highlight && highlight(sample),
+      });
 
       looker.addEventListener("error", (event) => {
         handleError(event.error);
@@ -89,9 +148,23 @@ export default <T extends FrameLooker | ImageLooker | VideoLooker>(
 
       return looker;
     },
-    [isClip, isFrame, isPatch, options, thumbnail, activeId, mediaField]
+    [
+      isClip,
+      isFrame,
+      isPatch,
+      options,
+      thumbnail,
+      mediaField,
+      dataset,
+      fieldSchema,
+      frameFieldSchema,
+      handleError,
+      highlight,
+      selected,
+      view,
+    ]
   );
-  const createLookerRef = useRef<(data: SampleData) => T>(create);
+  const createLookerRef = useRef(create);
 
   createLookerRef.current = create;
   return createLookerRef;

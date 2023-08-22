@@ -1,23 +1,35 @@
 import * as foq from "@fiftyone/relay";
-import { VALID_KEYPOINTS } from "@fiftyone/utilities";
+import { Stage, VALID_KEYPOINTS } from "@fiftyone/utilities";
 import { VariablesOf } from "react-relay";
-import { GetRecoilValue, selectorFamily } from "recoil";
+import { GetRecoilValue, selector, selectorFamily } from "recoil";
 import { graphQLSelectorFamily } from "recoil-relay";
 
-import * as filterAtoms from "./filters";
 import { ResponseFrom } from "../utils";
-import { groupStatistics, groupId, currentSlice } from "./groups";
-import { RelayEnvironmentKey } from "./relay";
-import * as selectors from "./selectors";
-import * as schemaAtoms from "./schema";
-import * as viewAtoms from "./view";
-import { sidebarSampleId } from "./modal";
 import { refresher } from "./atoms";
+import * as filterAtoms from "./filters";
+import { currentSlices, groupId, groupStatistics } from "./groups";
+import { sidebarSampleId } from "./modal";
+import { RelayEnvironmentKey } from "./relay";
+import * as schemaAtoms from "./schema";
 import { field } from "./schema";
+import * as selectors from "./selectors";
+import { MATCH_LABEL_TAGS } from "./sidebar";
+import * as viewAtoms from "./view";
 
+/**
+ * GraphQL Selector Family for Aggregations.
+ * @param extended - Whether to use extended aggregations.
+ */
 export const aggregationQuery = graphQLSelectorFamily<
   VariablesOf<foq.aggregationsQuery>,
-  { extended: boolean; modal: boolean; paths: string[]; root?: boolean },
+  {
+    extended: boolean;
+    modal: boolean;
+    paths: string[];
+    root?: boolean;
+    mixed?: boolean;
+    customView?: Stage[];
+  },
   ResponseFrom<foq.aggregationsQuery>
 >({
   key: "aggregationQuery",
@@ -25,27 +37,37 @@ export const aggregationQuery = graphQLSelectorFamily<
   mapResponse: (response) => response,
   query: foq.aggregation,
   variables:
-    ({ extended, modal, paths, root = false }) =>
+    ({
+      extended,
+      modal,
+      paths,
+      root = false,
+      mixed = false,
+      customView = undefined,
+    }) =>
     ({ get }) => {
-      const mixed = get(groupStatistics(modal)) === "group";
+      mixed = mixed || get(groupStatistics(modal)) === "group";
+      const group = get(groupId) || null;
+      const aggForm = {
+        index: get(refresher),
+        dataset: get(selectors.datasetName),
+        extendedStages: root ? [] : get(selectors.extendedStages),
+        filters:
+          extended && !root
+            ? get(modal ? filterAtoms.modalFilters : filterAtoms.filters)
+            : null,
+        groupId: !root && modal ? group : null,
+        hiddenLabels: !root ? get(selectors.hiddenLabelsArray) : [],
+        paths,
+        mixed,
+        sampleIds:
+          !root && modal && !group && !mixed ? [get(sidebarSampleId)] : [],
+        slices: mixed ? null : get(currentSlices(modal)), // when mixed, slice is not needed
+        view: customView ? customView : !root ? get(viewAtoms.view) : [],
+      };
 
       return {
-        form: {
-          index: get(refresher),
-          dataset: get(selectors.datasetName),
-          extendedStages: root ? [] : get(selectors.extendedStagesUnsorted),
-          filters:
-            extended && !root
-              ? get(modal ? filterAtoms.modalFilters : filterAtoms.filters)
-              : null,
-          groupId: !root && modal && mixed ? get(groupId) : null,
-          hiddenLabels: !root ? get(selectors.hiddenLabelsArray) : [],
-          paths,
-          mixed,
-          sampleIds: !root && modal && !mixed ? [get(sidebarSampleId)] : [],
-          slice: get(currentSlice(modal)),
-          view: !root ? get(viewAtoms.view) : [],
-        },
+        form: aggForm,
       };
     },
 });
@@ -55,12 +77,15 @@ export const aggregations = selectorFamily({
   get:
     (params: { extended: boolean; modal: boolean; paths: string[] }) =>
     ({ get }) => {
-      let extended = params.extended;
-      if (extended && !get(filterAtoms.hasFilters(params.modal))) {
-        extended = false;
-      }
+      if (params) {
+        let extended = params.extended;
+        if (extended && !get(filterAtoms.hasFilters(params.modal))) {
+          extended = false;
+        }
 
-      return get(aggregationQuery({ ...params, extended })).aggregations;
+        return get(aggregationQuery({ ...params, extended })).aggregations;
+      }
+      return [];
     },
 });
 
@@ -74,12 +99,28 @@ export const aggregation = selectorFamily({
       extended: boolean;
       modal: boolean;
       path: string;
+      mixed?: boolean;
     }) =>
     ({ get }) => {
       return get(
         aggregations({ ...params, paths: get(schemaAtoms.filterFields(path)) })
       ).filter((data) => data.path === path)[0];
     },
+});
+
+export const dynamicGroupsElementCount = selector<number>({
+  key: "dynamicGroupsElementCount",
+  get: ({ get }) => {
+    const aggregations = get(
+      aggregationQuery({
+        customView: get(viewAtoms.dynamicGroupViewQuery),
+        extended: false,
+        modal: false,
+        paths: [""],
+      })
+    ).aggregations;
+    return aggregations?.at(0)?.count ?? 0;
+  },
 });
 
 export const noneCount = selectorFamily<
@@ -92,11 +133,11 @@ export const noneCount = selectorFamily<
     ({ get }) => {
       const data = get(aggregation(params));
       const parent = params.path.split(".").slice(0, -1).join(".");
-
+      const isLabelTag = params.path.startsWith("_label_tags");
       // for ListField, set noneCount to zero (so that it is the none option is omitted in display)
       const schema = get(field(params.path));
-      const isListField = schema.ftype.includes("ListField");
-      return isListField
+      const isListField = schema?.ftype?.includes("ListField");
+      return isListField || isLabelTag
         ? 0
         : (get(count({ ...params, path: parent })) as number) - data.count;
     },
@@ -111,7 +152,7 @@ export const labelTagCounts = selectorFamily<
     ({ modal, extended }) =>
     ({ get }) => {
       const data = get(schemaAtoms.labelPaths({})).map((path) =>
-        get(aggregation({ extended, modal, path: `${path}.tags` }))
+        get(aggregation({ extended, modal, path: `${path}.tags`, mixed: true }))
       );
       const result = {};
 
@@ -153,20 +194,28 @@ export const stringCountResults = selectorFamily({
     ({ get }): { count: number; results: [string | null, number][] } => {
       const keys = params.path.split(".");
       let parent = keys[0];
-      let field = get(schemaAtoms.field(parent));
+      const field = get(schemaAtoms.field(parent));
+
       if (!field && parent === "frames") {
         parent = `frames.${keys[1]}`;
       }
 
-      if (
-        VALID_KEYPOINTS.includes(get(schemaAtoms.field(parent)).embeddedDocType)
-      ) {
-        const skeleton = get(selectors.skeleton(parent));
+      const isSkeletonPoints =
+        VALID_KEYPOINTS.includes(
+          get(schemaAtoms.field(parent)).embeddedDocType
+        ) && keys.slice(-1)[0] === "points";
 
-        return {
-          count: skeleton.labels.length,
-          results: skeleton.labels.map((label) => [label as string | null, -1]),
-        };
+      if (isSkeletonPoints) {
+        const skeleton = get(selectors.skeleton(parent));
+        if (skeleton && skeleton.labels) {
+          return {
+            count: skeleton.labels.length,
+            results: skeleton.labels.map((label) => [
+              label as string | null,
+              -1,
+            ]),
+          };
+        }
       }
 
       let { values, count } = get(aggregation(params));
@@ -197,14 +246,19 @@ export const booleanCountResults = selectorFamily<
     (params) =>
     ({ get }) => {
       const data = get(aggregation(params));
-      return {
+      const none = get(noneCount(params));
+
+      const result = {
         count: data.false + data.true,
         results: [
           [false, data.false],
           [true, data.true],
-          [null, get(noneCount(params))],
-        ],
+        ] as [boolean, number][],
       };
+      if (none) {
+        result.results.push([null, none]);
+      }
+      return result;
     },
 });
 
@@ -237,9 +291,13 @@ export const values = selectorFamily<
   get:
     (params) =>
     ({ get }) => {
-      return get(aggregation(params))
-        .values.map(({ value }) => value)
-        .sort();
+      if (params) {
+        const result = get(aggregation(params));
+        if (result && result.values) {
+          return result.values.map(({ value }) => value).sort() || [];
+        }
+      }
+      return [];
     },
 });
 
@@ -265,10 +323,22 @@ export const count = selectorFamily({
 
       if (!exists) {
         const split = params.path.split(".");
+        const [first] = split;
 
-        if (split[0] === "tags") {
+        if (first === "tags") {
           return get(counts({ ...params, path: "tags" }))[
             split.slice(1).join(".")
+          ];
+        }
+
+        if (first === "_label_tags" && !value) {
+          const r = get(cumulativeCounts({ ...params, ...MATCH_LABEL_TAGS }));
+          return Object.values(r).reduce((a, b) => a + b, 0);
+        }
+
+        if (first === "_label_tags" && value) {
+          return get(cumulativeCounts({ ...params, ...MATCH_LABEL_TAGS }))[
+            value
           ];
         }
 
@@ -276,7 +346,7 @@ export const count = selectorFamily({
           // this will never resolve, which allows for incoming schema changes
           // this shouldn't be necessary, but there is a mismatch between
           // aggs and schema when there is a field change
-          throw new Promise(() => {});
+          throw new Promise(() => undefined);
         }
 
         const parent = split.slice(0, split.length - 1).join(".");
@@ -294,7 +364,7 @@ export const count = selectorFamily({
         return get(counts(params))[value] || 0;
       }
 
-      return get(aggregation(params)).count as number;
+      return get(aggregation(params))?.count as number;
     },
 });
 
@@ -310,7 +380,7 @@ export const counts = selectorFamily({
 
         if (
           VALID_KEYPOINTS.includes(
-            get(schemaAtoms.field(parent)).embeddedDocType
+            get(schemaAtoms.field(parent))?.embeddedDocType
           )
         ) {
           const skeleton = get(selectors.skeleton(parent));
@@ -373,17 +443,20 @@ export const cumulativeCounts = selectorFamily<
   get:
     ({ extended, path: key, modal, ftype, embeddedDocType }) =>
     ({ get }) => {
-      return gatherPaths(get, ftype, embeddedDocType).reduce((result, path) => {
-        const data = get(counts({ extended, modal, path: `${path}.${key}` }));
-        for (const value in data) {
-          if (!result[value]) {
-            result[value] = 0;
-          }
+      return [...new Set(gatherPaths(get, ftype, embeddedDocType))].reduce(
+        (result, path) => {
+          const data = get(counts({ extended, modal, path: `${path}.${key}` }));
+          for (const value in data) {
+            if (!result[value]) {
+              result[value] = 0;
+            }
 
-          result[value] += data[value];
-        }
-        return result;
-      }, {});
+            result[value] += data[value];
+          }
+          return result;
+        },
+        {}
+      );
     },
 });
 
@@ -415,12 +488,40 @@ export const cumulativeValues = selectorFamily<
     },
 });
 
+export const cumulativePaths = selectorFamily<
+  string[],
+  {
+    extended: boolean;
+    path: string;
+    modal: boolean;
+    ftype: string | string[];
+    embeddedDocType?: string | string[];
+  }
+>({
+  key: "cumulativeValues",
+  get:
+    ({ extended, path: key, modal, ftype, embeddedDocType }) =>
+    ({ get }) => {
+      return Array.from(
+        new Set<string>(
+          gatherPaths(get, ftype, embeddedDocType).reduce(
+            (result) => [
+              ...result,
+              ...get(values({ extended, modal, path: `${key}` })),
+            ],
+            []
+          )
+        )
+      ).sort();
+    },
+});
+
 export const bounds = selectorFamily({
   key: "bounds",
   get:
     (params: { extended: boolean; path: string; modal: boolean }) =>
     ({ get }) => {
-      const { min, max } = get(aggregation(params));
+      const { min, max } = get(aggregation(params)) || {};
 
       return [min, max] as [number, number];
     },
@@ -448,6 +549,9 @@ export const nonfiniteCounts = selectorFamily({
     },
 });
 
+/**
+ * @hidden
+ */
 export type Nonfinite = "nan" | "ninf" | "inf" | "none";
 
 export const nonfiniteCount = selectorFamily<

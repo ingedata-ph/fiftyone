@@ -1,7 +1,7 @@
+import { AnimatePresence, motion } from "framer-motion";
 import React, { Suspense, useContext, useEffect, useMemo } from "react";
 import ReactDOM from "react-dom";
 import ReactGA from "react-ga";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   PreloadedQuery,
   useFragment,
@@ -11,6 +11,8 @@ import {
 import { useDebounce } from "react-use";
 import { useRecoilState, useRecoilValue } from "recoil";
 import { graphql } from "relay-runtime";
+
+import { OperatorCore } from "@fiftyone/operators";
 
 import {
   Button,
@@ -22,27 +24,26 @@ import {
 } from "@fiftyone/components";
 
 // built in plugins
-import "@fiftyone/map";
+import "@fiftyone/embeddings";
 import "@fiftyone/looker-3d";
+import "@fiftyone/map";
 
+import Teams from "../components/Teams/Teams";
+import ViewBar from "../components/ViewBar/ViewBar";
 import gaConfig from "../ga";
 import style from "./Root.module.css";
-import ViewBar from "../components/ViewBar/ViewBar";
-import Teams from "../components/Teams/Teams";
 
-import { RootQuery } from "./__generated__/RootQuery.graphql";
-import { RootConfig_query$key } from "./__generated__/RootConfig_query.graphql";
+import * as fos from "@fiftyone/state";
+import { Route, RouterContext, getDatasetName } from "@fiftyone/state";
+import { isElectron } from "@fiftyone/utilities";
 import { RootDatasets_query$key } from "./__generated__/RootDatasets_query.graphql";
 import { RootGA_query$key } from "./__generated__/RootGA_query.graphql";
 import { RootNav_query$key } from "./__generated__/RootNav_query.graphql";
-import { clone, isElectron } from "@fiftyone/utilities";
-import { RGB } from "@fiftyone/looker";
-import * as fos from "@fiftyone/state";
-import { getDatasetName, Route, RouterContext } from "@fiftyone/state";
+import { RootQuery } from "./__generated__/RootQuery.graphql";
 
-import DatasetSelector from "../components/DatasetSelector";
-import { useColorScheme, IconButton } from "@mui/material";
 import { DarkMode, LightMode } from "@mui/icons-material";
+import { IconButton, useColorScheme } from "@mui/material";
+import DatasetSelector from "../components/DatasetSelector";
 
 const rootQuery = graphql`
   query RootQuery($search: String = "", $count: Int, $cursor: String) {
@@ -52,7 +53,7 @@ const rootQuery = graphql`
   }
 `;
 
-const getUseSearch = (prepared: PreloadedQuery<RootQuery>) => {
+export const getUseSearch = (prepared: PreloadedQuery<RootQuery>) => {
   const refresh = useRecoilValue(fos.refresher);
 
   return (search: string) => {
@@ -69,6 +70,7 @@ const getUseSearch = (prepared: PreloadedQuery<RootQuery>) => {
               cursor
               node {
                 name
+                # can the view selector reuse the savedViews {} fragment?
               }
             }
           }
@@ -118,7 +120,7 @@ export const useGA = (prepared: PreloadedQuery<RootQuery>) => {
     const buildType = dev ? "dev" : "prod";
 
     ReactGA.initialize(gaConfig.app_ids[buildType], {
-      debug: dev,
+      debug: false,
       gaOptions: {
         storage: "none",
         cookieDomain: "none",
@@ -180,7 +182,6 @@ const Nav: React.FC<{ prepared: PreloadedQuery<RootQuery> }> = ({
           )}
           <IconButton
             title={mode === "dark" ? "Light mode" : "Dark mode"}
-            disableRipple
             onClick={() => {
               const nextMode = mode === "dark" ? "light" : "dark";
               setMode(nextMode);
@@ -197,6 +198,7 @@ const Nav: React.FC<{ prepared: PreloadedQuery<RootQuery> }> = ({
           <GitHubLink />
           <DocsLink />
         </div>
+        {dataset && <OperatorCore />}
       </Header>
       {ReactDOM.createPortal(
         <AnimatePresence>

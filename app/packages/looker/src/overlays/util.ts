@@ -1,9 +1,10 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 
+import colorString from "color-string";
 import { INFO_COLOR } from "../constants";
-import { BaseState, Coordinates } from "../state";
+import { BaseState, Coordinates, MaskTargets, RgbMaskTargets } from "../state";
 import { BaseLabel } from "./base";
 
 export const t = (state: BaseState, x: number, y: number): Coordinates => {
@@ -30,7 +31,7 @@ export const sizeBytes = (label: BaseLabel) => {
         case "object":
           var objClass = Object.prototype.toString.call(obj).slice(8, -1);
           if (objClass === "Object" || objClass === "Array") {
-            for (var key in obj) {
+            for (const key in obj) {
               if (!obj.hasOwnProperty(key)) continue;
               sizer(obj[key]);
             }
@@ -71,4 +72,55 @@ export const strokeCanvasRect = (
   ctx.setLineDash([state.dashLength]);
   strokeRect(ctx, state, INFO_COLOR);
   ctx.setLineDash([]);
+};
+
+/**
+ * Returns true if mask targets is RGB
+ */
+export function isRgbMaskTargets(
+  maskTargets: MaskTargets
+): maskTargets is RgbMaskTargets {
+  if (!maskTargets || typeof maskTargets !== "object") {
+    throw new Error("mask targets is invalid");
+  }
+
+  return Object.keys(maskTargets)[0]?.startsWith("#") === true;
+}
+
+// Return true is string is a valid color
+export function isValidColor(color: string): boolean {
+  return CSS.supports("color", color);
+}
+
+// Convert any valid css color to the hex color
+export function convertToHex(color: string) {
+  if (!isValidColor(color)) return null;
+  const formatted = colorString.get(color);
+  if (formatted) {
+    return colorString.to.hex(formatted?.value);
+  }
+  return null;
+}
+
+export function normalizeMaskTargetsCase(maskTargets: MaskTargets) {
+  if (!maskTargets || !isRgbMaskTargets(maskTargets)) {
+    return maskTargets;
+  }
+
+  const normalizedMaskTargets: RgbMaskTargets = {};
+  Object.entries(maskTargets).forEach(([key, value]) => {
+    normalizedMaskTargets[key.toLocaleUpperCase()] = value;
+  });
+  return normalizedMaskTargets;
+}
+
+export const convertId = (obj: Record<string, any>): Record<string, any> => {
+  return Object.fromEntries(
+    Object.entries(obj).map(([key, value]) => {
+      if (Array.isArray(value)) {
+        return [key, value.map((item) => ({ ...item, id: item["_id"] }))];
+      }
+      return [key, value];
+    })
+  );
 };

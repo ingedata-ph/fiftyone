@@ -1,35 +1,47 @@
 import { RGB } from "@fiftyone/looker";
+import { convertToHex, isValidColor } from "@fiftyone/looker/src/overlays/util";
+import { useColorScheme } from "@mui/material";
 import {
   TransactionInterface_UNSTABLE,
   useRecoilTransaction_UNSTABLE,
 } from "recoil";
 import {
-  modal,
-  sidebarGroupsDefinition,
+  ColorScheme,
   State,
-  tagging,
   _activeFields,
+  activeColorField,
+  activePcdSlices,
+  currentModalSample,
   dataset as datasetAtom,
-  resolveGroups,
-  filters,
-  selectedLabels,
-  selectedSamples,
-  patching,
-  similaritySorting,
-  savingFilters,
-  groupSlice,
-  similarityParameters,
   extendedSelection,
-  selectedMediaField,
-  sidebarMode,
+  filters,
+  groupSlice,
   groupStatistics,
+  isUsingSessionColorScheme,
+  patching,
+  resolveGroups,
+  savingFilters,
+  selectedFieldsStageState,
+  selectedLabels,
+  selectedMediaField,
+  selectedSamples,
+  sessionColorScheme,
+  sessionSpaces,
+  sidebarGroupsDefinition,
+  sidebarMode,
+  similarityParameters,
+  similaritySorting,
+  tagging,
+  theme,
 } from "../recoil";
-import { useColorScheme } from "@mui/material";
-
 import * as viewAtoms from "../recoil/view";
-import { collapseFields, viewsAreEqual } from "../utils";
+import {
+  DEFAULT_APP_COLOR_SCHEME,
+  collapseFields,
+  viewsAreEqual,
+} from "../utils";
 
-interface StateUpdate {
+export interface StateUpdate {
   colorscale?: RGB[];
   config?: State.Config;
   dataset?: State.Dataset;
@@ -40,28 +52,32 @@ export type StateResolver =
   | StateUpdate
   | ((t: TransactionInterface_UNSTABLE) => StateUpdate);
 
-const useStateUpdate = () => {
+const useStateUpdate = (ignoreSpaces = false) => {
   const { setMode } = useColorScheme();
-
   return useRecoilTransaction_UNSTABLE(
     (t) => (resolve: StateResolver) => {
       const { config, dataset, state } =
         resolve instanceof Function ? resolve(t) : resolve;
 
       const { get, reset, set } = t;
-
       if (state) {
         const view = get(viewAtoms.view);
+        if (dataset?.stages && !state.view) {
+          state.view = dataset.stages;
+        }
 
         if (!viewsAreEqual(view || [], state.view || [])) {
           set(viewAtoms.view, state.view || []);
+
           reset(extendedSelection);
           reset(similarityParameters);
           reset(filters);
+          reset(selectedFieldsStageState);
         }
+        set(viewAtoms.viewName, state.viewName || null);
       }
-
-      state?.viewCls !== undefined && set(viewAtoms.viewCls, state.viewCls);
+      const viewCls = state?.viewCls || dataset?.viewCls;
+      viewCls !== undefined && set(viewAtoms.viewCls, viewCls);
 
       state?.selected && set(selectedSamples, new Set(state.selected));
       state?.selectedLabels &&
@@ -80,15 +96,62 @@ const useStateUpdate = () => {
         setMode(config.theme);
       }
 
+      if (state?.spaces) {
+        set(sessionSpaces, state.spaces);
+      } else if (!ignoreSpaces) {
+        reset(sessionSpaces);
+      }
+
+      let colorSetting = DEFAULT_APP_COLOR_SCHEME as ColorScheme;
+      if (state?.colorScheme) {
+        const parsedSetting =
+          typeof state.colorScheme === "string"
+            ? typeof JSON.parse(state.colorScheme) === "string"
+              ? JSON.parse(JSON.parse(state.colorScheme))
+              : JSON.parse(state.colorScheme)
+            : state.colorScheme;
+
+        let colorPool = parsedSetting["color_pool"];
+        colorPool =
+          Array.isArray(colorPool) && colorPool?.length > 0
+            ? colorPool
+            : DEFAULT_APP_COLOR_SCHEME.colorPool;
+        colorPool =
+          colorPool.filter((c) => isValidColor(c)).length > 0
+            ? colorPool
+                .filter((c) => isValidColor(c))
+                .map((c) => convertToHex(c))
+            : DEFAULT_APP_COLOR_SCHEME.colorPool;
+        colorSetting = {
+          colorPool,
+          fields:
+            parsedSetting["fields"] ?? parsedSetting?.fields?.length > 0
+              ? parsedSetting.fields
+              : [],
+        } as ColorScheme;
+        set(sessionColorScheme, colorSetting);
+        set(isUsingSessionColorScheme, true);
+      } else if (!ignoreSpaces) {
+        reset(activeColorField);
+        reset(isUsingSessionColorScheme);
+        set(sessionColorScheme, colorSetting);
+      }
+
       if (dataset) {
         dataset.brainMethods = Object.values(dataset.brainMethods || {});
         dataset.evaluations = Object.values(dataset.evaluations || {});
+        dataset.savedViews = Object.values(dataset.savedViews || []);
         dataset.sampleFields = collapseFields(dataset.sampleFields);
         dataset.frameFields = collapseFields(dataset.frameFields);
         const previousDataset = get(datasetAtom);
 
         const currentSidebar = get(sidebarGroupsDefinition(false));
-        let groups = resolveGroups(dataset, currentSidebar);
+        let groups = resolveGroups(
+          dataset.sampleFields,
+          dataset.frameFields,
+          dataset.appConfig.sidebarGroups,
+          currentSidebar
+        );
 
         if (
           !previousDataset ||
@@ -97,16 +160,16 @@ const useStateUpdate = () => {
         ) {
           if (dataset?.name !== previousDataset?.name) {
             reset(sidebarMode(false));
-            groups = resolveGroups(dataset);
+            groups = resolveGroups(
+              dataset.sampleFields,
+              dataset.frameFields,
+              dataset.appConfig.sidebarGroups
+            );
           }
           reset(_activeFields({ modal: false }));
-          let slice = dataset.groupSlice;
+          reset(selectedFieldsStageState);
 
-          if (dataset.groupMediaTypes[slice] === "pcd") {
-            slice = dataset.defaultGroupSlice;
-          }
-
-          set(groupSlice(false), slice);
+          set(groupSlice(false), dataset.groupSlice);
           reset(groupStatistics(false));
 
           reset(similarityParameters);
@@ -128,6 +191,11 @@ const useStateUpdate = () => {
           );
           reset(extendedSelection);
           reset(filters);
+          reset(activePcdSlices);
+
+          // todo: find a way to reset atom family or key by dataset name
+          // reset(dynamicGroupSamplesStoreMap());
+          // reset(viewAtoms.dynamicGroupCurrentElementIndex);
         }
 
         if (JSON.stringify(groups) !== JSON.stringify(currentSidebar)) {
@@ -136,7 +204,7 @@ const useStateUpdate = () => {
         set(datasetAtom, dataset);
       }
 
-      set(modal, null);
+      set(currentModalSample, null);
 
       [true, false].forEach((i) =>
         [true, false].forEach((j) =>

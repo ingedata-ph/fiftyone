@@ -1,51 +1,50 @@
 /**
- * Copyright 2017-2022, Voxel51, Inc.
+ * Copyright 2017-2023, Voxel51, Inc.
  */
 import {
   IconButton,
   KeyboardArrowDown,
   KeyboardArrowUp,
   Loading,
-  ThemeProvider,
 } from "@fiftyone/components";
 import {
   Dataset as CoreDataset,
   DatasetNodeQuery,
+  DatasetQuery,
+  DatasetQueryRef,
   usePreLoadedDataset,
   ViewBar,
 } from "@fiftyone/core";
 import { usePlugins } from "@fiftyone/plugins";
 import * as fos from "@fiftyone/state";
-import { getEnvironment, RelayEnvironmentKey } from "@fiftyone/state";
-import React, { useState, useEffect, Suspense } from "react";
-import { PreloadedQuery, useQueryLoader } from "react-relay";
+import React, { Suspense, useContext, useEffect, useState } from "react";
+import { PreloadedQuery, useQueryLoader, usePreloadedQuery } from "react-relay";
 import { RecoilRoot, useRecoilValue, useSetRecoilState } from "recoil";
 import { RecoilRelayEnvironmentProvider } from "recoil-relay";
 import styled from "styled-components";
-
-import { DatasetQuery } from "@fiftyone/core";
+import { OperatorCore } from "@fiftyone/operators";
 
 // built-in plugins
 import "@fiftyone/looker-3d";
 import "@fiftyone/map";
-import { setCurrentEnvironment } from "@fiftyone/state/src/hooks/useRouter";
+import "@fiftyone/embeddings";
 
 const Container = styled.div`
   width: 100%;
   height: 100%;
-  background: var(--joy-palette-background-level2);
+  background: var(--fo-palette-background-level2);
   margin: 0;
   padding: 0;
   font-family: "Palanquin", sans-serif;
   font-size: 14px;
-  color: var(--joy-palette-text-primary);
+  color: var(--fo-palette-text-primary);
   display: flex;
   flex-direction: column;
   min-width: 660px;
 `;
 const ViewBarWrapper = styled.div`
   padding: 16px;
-  background: var(--joy-palette-background-header);
+  background: var(--fo-palette-background-header);
   display: flex;
 `;
 const CoreDatasetContainer = styled.div`
@@ -59,52 +58,51 @@ export interface DatasetProps {
   readOnly?: boolean;
   theme?: "dark" | "light";
   toggleHeaders?: () => void;
+  canEditSavedViews?: boolean;
+  canEditCustomColors?: boolean;
 }
 
-export const Dataset: React.FC<DatasetProps> = (props) => {
-  const [environment] = useState(getEnvironment);
-
-  useEffect(() => {
-    setCurrentEnvironment(environment);
-  }, [environment]);
-
-  return (
-    <RecoilRoot>
-      <RecoilRelayEnvironmentProvider
-        environment={environment}
-        environmentKey={RelayEnvironmentKey}
-      >
-        <DatasetRenderer {...props} />
-      </RecoilRelayEnvironmentProvider>
-    </RecoilRoot>
-  );
-};
-
-export const DatasetRenderer: React.FC<DatasetProps> = ({
+export const Dataset: React.FC<DatasetProps> = ({
   dataset,
   compactLayout = true,
   hideHeaders = false,
   readOnly = false,
   theme = "dark",
   toggleHeaders,
+  canEditSavedViews = true,
+  canEditCustomColors = true,
 }) => {
   const [queryRef, loadQuery] = useQueryLoader<DatasetQuery>(DatasetNodeQuery);
   const setTheme = useSetRecoilState(fos.theme);
+  const setCanChangeSavedViews = useSetRecoilState(fos.canEditSavedViews);
+  const setCanChangeCustomColors = useSetRecoilState(fos.canEditCustomColors);
   const setCompactLayout = useSetRecoilState(fos.compactLayout);
   const setReadOnly = useSetRecoilState(fos.readOnly);
 
   React.useLayoutEffect(() => {
     setCompactLayout(compactLayout);
   }, [compactLayout]);
-  React.useEffect(() => {
-    loadQuery({ name: dataset });
-  }, [dataset]);
   React.useLayoutEffect(() => {
     setReadOnly(readOnly);
   }, [readOnly]);
   React.useLayoutEffect(() => {
     setTheme(theme);
   }, [theme]);
+
+  const context = useContext(fos.RouterContext);
+  const savedViewSlug = React.useMemo(
+    () => fos.getSavedViewName(context),
+    [context]
+  );
+  React.useEffect(() => {
+    loadQuery({ name: dataset, savedViewSlug: savedViewSlug });
+  }, [dataset, savedViewSlug]);
+  React.useEffect(() => {
+    setCanChangeSavedViews(canEditSavedViews);
+  }, [canEditSavedViews]);
+  React.useEffect(() => {
+    setCanChangeCustomColors(canEditCustomColors);
+  }, [canEditCustomColors]);
 
   const plugins = usePlugins();
   const loadingElement = <Loading>Pixelating...</Loading>;
@@ -113,27 +111,29 @@ export const DatasetRenderer: React.FC<DatasetProps> = ({
   if (plugins.hasError) return <div>Plugin error...</div>;
 
   return (
-    <ThemeProvider>
-      <Container>
-        <Suspense fallback={loadingElement}>
-          <DatasetLoader dataset={dataset} queryRef={queryRef}>
-            <ViewBarWrapper>
-              <ViewBar />
-              {toggleHeaders && (
-                <HeadersToggle
-                  toggleHeaders={toggleHeaders}
-                  hideHeaders={hideHeaders}
-                />
-              )}
-            </ViewBarWrapper>
+    <Container>
+      <Suspense fallback={loadingElement}>
+        <DatasetLoader dataset={dataset} queryRef={queryRef}>
+          <ViewBarWrapper>
+            <ViewBar />
+            {toggleHeaders && (
+              <HeadersToggle
+                toggleHeaders={toggleHeaders}
+                hideHeaders={hideHeaders}
+              />
+            )}
+          </ViewBarWrapper>
+          <Suspense fallback={loadingElement}>
             <CoreDatasetContainer>
               <CoreDataset />
             </CoreDatasetContainer>
-          </DatasetLoader>
-        </Suspense>
-        <div id="modal" />
-      </Container>
-    </ThemeProvider>
+          </Suspense>
+        </DatasetLoader>
+      </Suspense>
+      <div id="modal" />
+      <div id="colorModal" />
+      <OperatorCore />
+    </Container>
   );
 };
 
@@ -147,7 +147,6 @@ const HeadersToggle: React.FC<{
       onClick={() => {
         toggleHeaders();
       }}
-      disableRipple
       sx={{ color: (theme) => theme.palette.text.secondary }}
     >
       {hideHeaders && <KeyboardArrowDown />}
@@ -164,6 +163,7 @@ const DatasetLoader: React.FC<
 > = ({ children, dataset, queryRef }) => {
   const [data, ready] = usePreLoadedDataset(queryRef);
   const datasetData = useRecoilValue(fos.dataset);
+  const query = usePreloadedQuery<DatasetQuery>(DatasetNodeQuery, queryRef);
 
   if (!data) {
     return <h4>Dataset not found!</h4>;
@@ -175,5 +175,9 @@ const DatasetLoader: React.FC<
 
   if (!ready) return null;
 
-  return <>{children}</>;
+  return (
+    <DatasetQueryRef.Provider value={query}>
+      {children}
+    </DatasetQueryRef.Provider>
+  );
 };
