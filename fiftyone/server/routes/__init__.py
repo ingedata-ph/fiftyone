@@ -22,6 +22,8 @@ from .tagging import Tagging
 from .values import Values
 from fiftyone.operators.server import OperatorRoutes
 
+from .load_data import LoadData
+
 # Starlette routes should not be created here. Please leave as tuple definitions
 routes = (
     EmbeddingsRoutes
@@ -41,5 +43,6 @@ routes = (
         ("/tag", Tag),
         ("/tagging", Tagging),
         ("/values", Values),
+        ("/load_data", LoadData),
     ]
 )

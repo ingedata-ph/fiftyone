@@ -20,4 +20,5 @@ class FiftyOne(HTTPEndpoint):
         return {
             "version": foc.VERSION,
             "dev": foc.DEV_INSTALL or foc.RC_INSTALL,
+            "test_update": True,
         }
