@@ -3,10 +3,39 @@ from typing import Optional
 from pathlib import Path
 
 import fiftyone as fo
+import fiftyone.core.dataset as fod
+import fiftyone.types as fot
+import fiftyone.core.session as fos
 from tqdm import tqdm
 
-def hello_fiftyone() -> str:
-    return "fiftyone_fix"
+def coco_to_fiftyone(organization_name: str, IMAGE_URLS_FILE: str, ANNOTATION_FILE: str, dataset_name: str) -> str:
+    dataset_list = fod.list_datasets()
+    if organization_name != "XXII":
+        dataset_params = {
+            "dataset_type": fot.COCODetectionDataset(),
+            "data_path": IMAGE_URLS_FILE,
+            "labels_path": ANNOTATION_FILE,
+            "label_types": ["segmentations"],
+            "include_id": True,
+        }
+
+    if dataset_name in dataset_list:
+        old_dataset = fod.load_dataset(dataset_name)
+        old_dataset.clear()
+        if organization_name == "XXII":
+            coco_xxii_to_fiftyone(dataset_name, ANNOTATION_FILE, IMAGE_URLS_FILE, old_dataset)
+        else:
+            old_dataset.add_dir(**dataset_params)
+    else:
+        if organization_name == "XXII":
+            new_dataset = coco_xxii_to_fiftyone(dataset_name, ANNOTATION_FILE, IMAGE_URLS_FILE)
+        else:
+            dataset_params["name"] = dataset_name
+            new_dataset = fod.Dataset.from_dir(**dataset_params)
+
+        new_dataset.persistent = True
+
+    return "Dataset created"
 
 def bbox_coco_to_fiftyone(bbox: list[float], width: int, height: int) -> list[float]:
     """ This function converts a coco bbox to a fiftyone bbox
@@ -91,6 +120,8 @@ def coco_xxii_to_fiftyone(name: str, coco_json: Path, image_urls: Path, old_data
                                                                     height=img["height"],
                                                                     labelmap=labelmap
                                                                     )
+        else:
+            print(f"WARNING: this image has no annotations: {img['file_name']}")
 
         # add available tags to the sample
         tags = img.get("tags", None)

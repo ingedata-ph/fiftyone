@@ -33,7 +33,7 @@ ARG BASE_IMAGE=ubuntu:20.04
 FROM $BASE_IMAGE
 
 # The Python version to install
-ARG PYTHON_VERSION=3.8
+ARG PYTHON_VERSION=3.9
 
 #
 # Install system packages

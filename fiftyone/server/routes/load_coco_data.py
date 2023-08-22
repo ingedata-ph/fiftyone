@@ -3,10 +3,24 @@ from typing import Optional
 from pathlib import Path
 
 import fiftyone as fo
+import fiftyone.core.dataset as fod
+import fiftyone.types as fot
+import fiftyone.core.session as fos
 from tqdm import tqdm
 
-def hello_fiftyone() -> str:
-    return "fiftyone_fix"
+def load_coco_data(organization_name: str, IMAGE_URLS_FILE: str, ANNOTATION_FILE: str, dataset_name: str) -> str:
+    dataset_list = fod.list_datasets()
+
+    if dataset_name in dataset_list:
+        old_dataset = fod.load_dataset(dataset_name)
+        old_dataset.clear()
+
+        coco_to_fiftyone(dataset_name, ANNOTATION_FILE, IMAGE_URLS_FILE, old_dataset)
+    else:
+        new_dataset = coco_to_fiftyone(dataset_name, ANNOTATION_FILE, IMAGE_URLS_FILE)
+        new_dataset.persistent = True
+
+    return "Dataset created"
 
 def bbox_coco_to_fiftyone(bbox: list[float], width: int, height: int) -> list[float]:
     """ This function converts a coco bbox to a fiftyone bbox
@@ -52,8 +66,8 @@ def coco_annotations_to_detections(coco_annots: list[dict], width: int, height: 
     return fo.Detections(detections=detections)
 
 
-def coco_xxii_to_fiftyone(name: str, coco_json: Path, image_urls: Path, old_dataset: Optional[fo.Dataset] = None) -> fo.Dataset:
-    """ Creates a fiftyone.Dataset object from a COCO XXII JSON dataset and stores it in FiftyOne's DB
+def coco_to_fiftyone(name: str, coco_json: Path, image_urls: Path, old_dataset: Optional[fo.Dataset] = None) -> fo.Dataset:
+    """ Creates a fiftyone.Dataset object from a COCO JSON dataset and stores it in FiftyOne's DB
     Args:
         name (str): Name of the fo.Dataset that will be created
         coco_json (Path): Path to the COCO .json file
@@ -91,6 +105,8 @@ def coco_xxii_to_fiftyone(name: str, coco_json: Path, image_urls: Path, old_data
                                                                     height=img["height"],
                                                                     labelmap=labelmap
                                                                     )
+        else:
+            print(f"WARNING: this image has no annotations: {img['file_name']}")
 
         # add available tags to the sample
         tags = img.get("tags", None)
@@ -109,4 +125,3 @@ def coco_xxii_to_fiftyone(name: str, coco_json: Path, image_urls: Path, old_data
         dataset.add_samples(samples, dynamic=True)
 
     return dataset
-
